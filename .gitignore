@@ -1,0 +1,14 @@
+bin/
+obj/
+dist/
+.vs/
+*.user
+*.zip
+__pycache__/
+
+# Private notes (kept locally, not published)
+CLAUDE.md
+.claude/
+
+# Personal ValBridge test scripts (own world, character and spots); see examples/ for a general one
+tests/

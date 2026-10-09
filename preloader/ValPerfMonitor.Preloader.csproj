@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A BepInEx preloader patcher (goes in BepInEx\patchers). It patches nothing: it only starts
+       before any mod loads, so it can time each mod's loading for ValPerfMonitor. -->
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>11</LangVersion>
+    <AssemblyName>ValPerfMonitor.Preloader</AssemblyName>
+    <RootNamespace>ValPerfMonitor.Preloader</RootNamespace>
+    <Nullable>disable</Nullable>
+    <Version>1.0.0</Version>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <GaleProfile Condition="'$(GaleProfile)' == ''">$(APPDATA)\com.kesomannen.gale\valheim\profiles\Performance Test</GaleProfile>
+    <BepInExCore>$(GaleProfile)\BepInEx\core</BepInExCore>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx" HintPath="$(BepInExCore)\BepInEx.dll" Private="false" />
+    <Reference Include="Mono.Cecil" HintPath="$(BepInExCore)\Mono.Cecil.dll" Private="false" />
+  </ItemGroup>
+
+</Project>

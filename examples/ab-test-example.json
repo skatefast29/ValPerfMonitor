@@ -1,0 +1,21 @@
+{
+ "name": "ab-test-example",
+ "screenshotOnFail": true,
+ "steps": [
+  { "note": "Example ValBridge test script for ValPerfMonitor. Use a throwaway character and world: it pins time and weather and turns on god mode. Replace YourWorld / YourCharacter and the mod name, then run it with ValBridge's test/run_file." },
+  { "call": "world/enter", "args": { "world": "YourWorld", "character": "YourCharacter" } },
+  { "waitUntil": { "call": "perf/status" }, "until": [ { "path": "worldReady", "equals": true } ], "timeout": 120 },
+  { "call": "perf/stop" },
+  { "call": "player/set_protection", "args": { "god": "true" } },
+  { "call": "env/set_time", "args": { "hour": 12, "pin": true } },
+  { "call": "env/set_weather", "args": { "name": "Clear" } },
+  { "wait": 20 },
+  { "call": "perf/ab_test", "args": { "mod": "Some Mod Name", "seconds": 20, "rounds": 3 } },
+  { "waitUntil": { "call": "perf/status" }, "until": [ { "path": "abTest", "equals": "" } ], "timeout": 600 },
+  { "call": "perf/ab_result" },
+  { "call": "perf/load_times" },
+  { "call": "env/set_time", "args": { "hour": -1, "pin": false } },
+  { "call": "env/set_weather", "args": { "name": "" } },
+  { "call": "player/set_protection", "args": { "god": "false" } }
+ ]
+}

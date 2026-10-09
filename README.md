@@ -1,0 +1,132 @@
+# ValPerfMonitor
+
+A testing tool. It measures what each installed mod and each part of Valheim itself costs, and takes its own cost out of the results. Install it in a test profile, measure, then remove it.
+
+It answers questions like: which mod costs the most frame time? Which one makes garbage collection stutter? What was that freeze? How long does each mod add to startup? Is something leaking memory?
+
+## Requirements
+- Valheim 1.0 (Unity 6, Mono) with BepInExPack_Valheim 5.4.23 or newer.
+- Client side only. It measures whatever mods are installed; it needs none of them.
+
+## Recommended: ValBridge
+The monitor works on its own, and [ValBridge](https://github.com/skatefast29/ValBridge) works without it, but they go well together. ValBridge lets an AI agent (or a script) drive the running game: start it, load a world, move the player, pin the weather. With both installed, the agent can run the monitor's tests, read the results and repeat them the same way every time, with no one at the keyboard. See [Remote control](#remote-control-valbridge) for the commands the monitor adds, and `examples/` for a test script to start from.
+
+## Installation
+The release zip has two parts, and both are needed:
+- `plugins/ValPerfMonitor.dll`: the monitor.
+- `patchers/ValPerfMonitor.Preloader.dll`: a tiny helper that starts before any mod loads, so each mod's startup time can be measured. It patches nothing.
+
+**Gale / r2modman:** *Import → local mod* and pick the zip. **Manual:** copy `ValPerfMonitor.dll` to `BepInEx/plugins/ValPerfMonitor/` and `ValPerfMonitor.Preloader.dll` to `BepInEx/patchers/ValPerfMonitor/`.
+
+Use a separate test profile. The monitor attaches thousands of small hooks while it measures; it is not meant to stay installed for normal play.
+
+## Quick start
+1. Launch, load a world, go to the spot you want to test.
+2. Press **F11**, type a label such as `all mods`, choose **Full suite**, press **Start**, and stand still for about 4 minutes.
+3. Change one thing (remove a mod, change a setting), go to the same spot, run the suite again with a new label.
+4. Open `BepInEx/ValPerfMonitor/compare.html` and pick the two runs.
+
+For before/after comparisons, set the game's FPS limit to unlimited and vsync off: a frame cap hides CPU savings.
+
+## Capture modes
+Each capture records in one mode. Every capture gets its own folder and report.
+
+| Mode | What it records | Hooks attached |
+|---|---|---|
+| **Baseline** | True FPS, frame-time percentiles, garbage collections (GC), render counters, world context | none |
+| **Timing** | CPU self-time per mod method and per game system (about 200 vanilla update loops) | all |
+| **Allocations** | Memory each mod and game system allocates per frame (what drives GC stutter) | all |
+| **Trace** | Timing, plus a full flame graph of every slow frame (open at speedscope.app) | all |
+
+The modes are kept separate on purpose. Allocation counting and trace recording each add their own overhead, so mixing them would blur the timing numbers. The **full suite** (Shift+F11) runs all four back to back at the same spot, 60 s of counted time each.
+
+## Test panel (F11)
+F11 opens the test panel. While it is open the mouse is free, the game ignores movement, camera and attack input (as when typing on a sign), and no frames are counted. Press F11 again or ✕ to close it.
+
+- **Run a test**: choose **Full suite**, **Single test** (one mode for a set time) or **Continuous recording** (until you press Stop), pick the mode, type a label (e.g. `all mods`, `without Seasons`), set the duration, and press **Start**. The panel closes and the test runs. A timed test saves its results and returns to idle when it finishes.
+- **Live view**: the graph and the ranked table of mods and game systems. Click a row to see its heaviest methods.
+- **Results**: captures finished this session (FPS, 1% low, heaviest mod) with a button for each report, plus **Open comparison page** and **Open logs folder**.
+- **Load times & memory**: startup time (and each mod's share), every world load and logout this session, and the memory leak check.
+- A **Stop** button in the panel header ends whatever is running and saves it.
+- Optional **live HUD**: a small readout of the top mods while you play (toggle in the panel).
+
+On launch it starts a continuous Timing recording by default (config `Record on launch`). Turn that off if you want it to wait idle until you start a test.
+
+Hotkeys still work without the panel: **Ctrl+F11** starts a new capture in the same mode, and **Shift+F11** starts or stops the full suite.
+
+## Also recorded
+- **Load times.** Launch to a settled main menu, split into steps, plus each mod's own loading time (needs `ValPerfMonitor.Preloader.dll` in `BepInEx\patchers`, included). Every world load: until you are in the world, until the loading screen is gone, and until the game stops hitching (3 s without a frame over 100 ms). Every logout.
+- **Loading steps.** Startup, world load and logout split by the game's own big steps (item database, prefab registry, world file, locations, player spawn...), each including the mod patches on it, and the slow startup and world-load steps are split into each mod's own patches on them and the game's own code (`load_steps.csv`, `load_step_mods.csv`).
+- **Coroutines.** Mods' step-by-step background routines are timed like their other code (hook type `Coroutine`).
+- **Network messages.** Every RPC by name, with the mod that handles it, how often and how many KB, plus the connection's total KB/s. In single player nothing crosses a network, but the messages still cost CPU.
+- **Memory leak check.** Once a minute (never during timed tests): game objects, textures, meshes, materials, sounds, scripts per mod, and memory. A leak is a count that keeps rising while the number of loaded objects stays about the same.
+- **Likely cause of every slow frame**: garbage collection, world save, teleport, objects loading, one mod or game system, or engine/rendering.
+
+## Output: `BepInEx\ValPerfMonitor\`
+- `compare.html`: every capture from every session. Pick runs A and B to see FPS / 1% low changes, which mods were added or removed between them (and a warning when the game version differs), and per-mod changes. **Start here after testing.**
+- `runs.csv`: the same data for Excel.
+- `<session>\load_steps.csv`: the loading steps per startup, world load and logout.
+- `startup_times.csv`, `world_load_times.csv`, `logout_times.csv`: one row per launch / load / logout, across sessions.
+- `<session>\startup_mods.csv`: each mod's loading time. `<session>\memory.csv`, `memory_by_mod.csv`: the leak check.
+- `<session>\<NN_Mode_label>\`, one folder per capture:
+  - `report.html`: charts and sortable tables.
+  - `frames.csv`: per 10 s: FPS, p50/p95/p99/max frame time, monitor cost, GC, heap, draw calls, triangles, CPU/GPU time (when the game exposes it), biome, object count, nearby building pieces, weather.
+  - `timeline.csv`: per 10 s, per mod or game system.
+  - `summary_owners.csv` / `summary_methods.csv`: ranked totals for the capture.
+  - `spikes.csv`: every frame over 50 ms with its likely cause, top 3 owners and a GC flag.
+  - `network.csv` (per 10 s) and `summary_network.csv`: network messages.
+  - `traces\*.speedscope.json` (Trace mode only): drag the file onto https://www.speedscope.app.
+
+## How false readings are kept out
+1. **Self time with overhead removed.** Each method is charged only for its own work. The calibrated cost of the probes on anything it calls is subtracted, so a mod is never billed for another mod's or the monitor's work.
+2. **Frame time is corrected.** The monitor times its own main-thread work (overlay, rollups, logging) and subtracts it and the probe overhead from every frame. Reported FPS is the estimate without the monitor.
+3. **Contaminated frames are excluded, not corrected.** Frames are left out when the monitor attached hooks, wrote reports, used more than 1 ms itself, or was warming up (5 s after hooking while the game compiles the rebuilt methods, 2 s after a mode switch).
+4. **GC is handled conservatively.** A garbage collection in a frame where the monitor was busy (or its writer thread was building a file) is excluded. All disk writing happens on a background thread.
+5. **Baseline cross-check.** Compare the Baseline FPS with the Timing FPS from the same suite. A small gap means the correction worked.
+6. **Self-checks at startup.** The log reports each probe's measured cost, which allocation counter was found (and whether it is exact), and a warning if the probe itself allocates memory on this runtime.
+
+## Not measured
+- Transpiler edits: they change game code in place, so they are counted but not timed.
+- Background threads.
+- GPU cost: no per-mod GPU number is possible, but render counters and GPU time (when available) show the graphics side.
+
+## If the game crashes while it hooks
+Hooking a method makes the game compile it again, and on Unity's Mono runtime a few methods abort the game when that happens. The monitor writes the method it is about to hook to `BepInEx/ValPerfMonitor/hooking-in-progress.txt` first. After a crash, the next launch adds that method to `skip-methods.txt` and never hooks it again, so each bad method can crash the game at most once. Leave both files alone; delete a line from `skip-methods.txt` to retry that method.
+
+## Remote control (ValBridge)
+With [ValBridge](https://github.com/skatefast29/ValBridge) installed and the game started through it, an agent can run tests: `perf/status`, `perf/start_suite` (label, seconds per mode), `perf/stop`, `perf/results`, `perf/load_times`, `perf/patches_on`, `perf/alloc_check`, `perf/slow_objects`, `perf/objects` (what is loaded right now, by prefab), `perf/worldgen_cost` (how much a world-generation mod such as Riverheim adds to the alternative biome check during world load), and A/B tests with `perf/ab_test` / `perf/ab_result` (take a mod's patches off and put them back in turns, to see whether it really costs frame time; rounds where the weather changed, the player moved or objects loaded are left out, and extra rounds are added when the answer is unclear). Without ValBridge these do nothing.
+
+## Configuration
+`BepInEx/config/valheimmods.ValPerfMonitor.cfg`, created on first launch. Everything has a working default; the most useful settings:
+- `Record on launch`: start a continuous Timing recording when a world loads (on by default).
+- `Live overlay`: Off / Compact / Full readout while playing (also Alt+F11).
+- `Seconds per mode`: length of each step of the full suite.
+- `Excluded mod GUIDs`: mods to leave unmeasured.
+- `Measure mod coroutines`, `Track network messages`, `Memory check every (seconds)`: switch the extra recordings off.
+
+## Build from source
+Needs the .NET SDK (any recent version), Valheim, and a BepInEx profile (the DLLs are referenced from the game and the profile, never copied into this repository).
+
+```
+dotnet build -c Release
+dotnet build -c Release -p:Deploy=true
+python package.py
+```
+- The first builds both DLLs (`bin/Release/net472/` and `preloader/bin/Release/net472/`).
+- `Deploy=true` also copies them into the profile's `plugins` and `patchers` folders.
+- `package.py` (Python 3) makes the Thunderstore-format zip in `dist/`.
+
+Paths default to a Steam install and a Gale profile named "Performance Test". Override them on the command line:
+```
+dotnet build -c Release -p:ValheimDir="D:\Games\Valheim" -p:GaleProfile="C:\path\to\profile"
+```
+`GaleProfile` is the folder that contains `BepInEx`. The project compiles against the real game DLLs (not publicized ones), so reaching a private game member is a compile error and goes through `AccessTools` instead.
+
+## Source layout
+| Folder | What |
+|---|---|
+| `src/` | The plugin: `Plugin.cs` (frame loop, captures, suite), `Probe.cs` (the per-call hook), `Instrumenter.cs` (finds and hooks methods), `Stats.cs`, `Capture.cs`, `Report.cs` (CSV and HTML), `Overlay.cs` (F11 panel and live HUD), `LoadTimes.cs`, `NetworkStats.cs`, `MemoryTracker.cs`, `SafetyGuard.cs` (crash protection while hooking) |
+| `preloader/` | The startup-timing helper (a BepInEx preloader patcher) |
+
+## License
+MIT, see [LICENSE](LICENSE).

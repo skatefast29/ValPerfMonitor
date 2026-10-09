@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>11</LangVersion>
+    <AssemblyName>ValPerfMonitor</AssemblyName>
+    <RootNamespace>ValPerfMonitor</RootNamespace>
+    <Nullable>disable</Nullable>
+    <Version>1.0.0</Version>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <!-- Override on the command line if your paths differ:
+       dotnet build -p:ValheimDir="..." -p:GaleProfile="..." -->
+  <PropertyGroup>
+    <ValheimDir Condition="'$(ValheimDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Valheim</ValheimDir>
+    <GaleProfile Condition="'$(GaleProfile)' == ''">$(APPDATA)\com.kesomannen.gale\valheim\profiles\Performance Test</GaleProfile>
+    <ManagedDir>$(ValheimDir)\valheim_Data\Managed</ManagedDir>
+    <BepInExCore>$(GaleProfile)\BepInEx\core</BepInExCore>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="0Harmony" HintPath="$(BepInExCore)\0Harmony.dll" Private="false" />
+    <Reference Include="BepInEx" HintPath="$(BepInExCore)\BepInEx.dll" Private="false" />
+    <Reference Include="assembly_valheim" HintPath="$(ManagedDir)\assembly_valheim.dll" Private="false" />
+    <Reference Include="assembly_utils" HintPath="$(ManagedDir)\assembly_utils.dll" Private="false" />
+    <Reference Include="UnityEngine" HintPath="$(ManagedDir)\UnityEngine.dll" Private="false" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(ManagedDir)\UnityEngine.CoreModule.dll" Private="false" />
+    <Reference Include="UnityEngine.IMGUIModule" HintPath="$(ManagedDir)\UnityEngine.IMGUIModule.dll" Private="false" />
+    <Reference Include="UnityEngine.InputLegacyModule" HintPath="$(ManagedDir)\UnityEngine.InputLegacyModule.dll" Private="false" />
+    <Reference Include="UnityEngine.UIModule" HintPath="$(ManagedDir)\UnityEngine.UIModule.dll" Private="false" />
+    <Reference Include="UnityEngine.AudioModule" HintPath="$(ManagedDir)\UnityEngine.AudioModule.dll" Private="false" />
+    <Reference Include="UnityEngine.TextRenderingModule" HintPath="$(ManagedDir)\UnityEngine.TextRenderingModule.dll" Private="false" />
+  </ItemGroup>
+
+  <!-- The preloader patcher is its own small project (it must load before every mod). -->
+  <ItemGroup>
+    <Compile Remove="preloader\**" />
+    <None Remove="preloader\**" />
+  </ItemGroup>
+  <Target Name="BuildPreloader" BeforeTargets="Build">
+    <MSBuild Projects="preloader\ValPerfMonitor.Preloader.csproj" Targets="Restore" Properties="Configuration=$(Configuration);GaleProfile=$(GaleProfile);RestorePass=1" />
+    <MSBuild Projects="preloader\ValPerfMonitor.Preloader.csproj" Targets="Build" Properties="Configuration=$(Configuration);GaleProfile=$(GaleProfile)" />
+  </Target>
+
+  <!-- After a build, drop the DLL straight into the Gale test profile. -->
+  <Target Name="DeployToGale" AfterTargets="Build" Condition="'$(Deploy)' == 'true'">
+    <MakeDir Directories="$(GaleProfile)\BepInEx\plugins\ValPerfMonitor" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(GaleProfile)\BepInEx\plugins\ValPerfMonitor" />
+    <MakeDir Directories="$(GaleProfile)\BepInEx\patchers\ValPerfMonitor" />
+    <Copy SourceFiles="preloader\bin\$(Configuration)\net472\ValPerfMonitor.Preloader.dll" DestinationFolder="$(GaleProfile)\BepInEx\patchers\ValPerfMonitor" />
+  </Target>
+
+</Project>
