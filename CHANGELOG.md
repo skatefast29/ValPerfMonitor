@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- No changes to the mod. Full changelog and source: https://github.com/skatefast29/ValPerfMonitor/blob/main/CHANGELOG.md
+
 ## 1.0.0
 
 First public release.
