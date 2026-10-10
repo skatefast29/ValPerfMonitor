@@ -1,0 +1,58 @@
+# Publishing a GitHub release uploads its zip to Thunderstore and Hexium.
+# The zip is built locally (package.py), since building needs the game's files.
+# Secrets (Settings > Secrets and variables > Actions): THUNDERSTORE_TOKEN, HEXIUM_TOKEN.
+# A site whose secret isn't set is skipped.
+name: Publish to Thunderstore and Hexium
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish again (e.g. v1.0.0)
+        required: true
+      sites:
+        description: Where to publish
+        type: choice
+        options: [both, thunderstore, hexium]
+        default: both
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      SITES: ${{ inputs.sites || 'both' }}
+      GH_TOKEN: ${{ github.token }}
+      THUNDERSTORE_TOKEN: ${{ secrets.THUNDERSTORE_TOKEN }}
+      HEXIUM_TOKEN: ${{ secrets.HEXIUM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the release zip
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.zip' --dir dist
+          ls dist/*.zip
+
+      - name: Check the zip's version matches the tag
+        run: |
+          version=$(unzip -p dist/*.zip manifest.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["version_number"])')
+          if [ "v$version" != "$TAG" ]; then echo "Tag $TAG doesn't match manifest version $version"; exit 1; fi
+
+      - name: Publish to Thunderstore
+        if: env.THUNDERSTORE_TOKEN != '' && env.SITES != 'hexium'
+        run: >
+          python3 .github/scripts/publish.py https://thunderstore.io/api/experimental THUNDERSTORE_TOKEN
+          dist/*.zip BarryWhite
+          '{"valheim": ["mods", "tools", "utility", "client-side", "ai-generated", "deep-north-update"]}'
+
+      - name: Publish to Hexium
+        if: env.HEXIUM_TOKEN != '' && env.SITES != 'thunderstore'
+        run: >
+          python3 .github/scripts/publish.py https://hexium.gg/api/experimental HEXIUM_TOKEN
+          dist/*.zip BarryWhite
+          '{"valheim": ["Performance", "Debugging", "Tools", "Open Source", "Valheim 1.0", "Client"]}'
