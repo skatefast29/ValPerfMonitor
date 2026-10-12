@@ -2,7 +2,7 @@
 
 ## 1.0.3
 
-- **Faster hooking on entering a world:** attaching all probes at once (a few seconds after you load in) now uses the fast budget too, so it takes about 8-9 s instead of about 14 s. The game stutters briefly while it runs; small top-ups while playing still use the gentle 8 ms per frame. The setting is now called "Fast hooking budget ms per frame".
+- **Faster hooking on entering a world:** attaching all probes at once (a few seconds after you load in) now uses the fast budget too, so it takes about 9-10 s instead of 14-17 s. The game stutters briefly while it runs; small top-ups while playing still use the gentle 8 ms per frame. The setting is now called "Fast hooking budget ms per frame".
 
 ## 1.0.2
 
