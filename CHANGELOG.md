@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.4
+
+- Minor README fixes: the companion bridge's current name and link (ValAgentBridge), the hooking and startup split settings, and the full source file list. No changes to how the mod works.
+
 ## 1.0.3
 
 - **Faster hooking on entering a world:** attaching all probes at once (a few seconds after you load in) now uses the fast budget too, so it takes about 9-10 s instead of 14-17 s. The game stutters briefly while it runs; small top-ups while playing still use the gentle 8 ms per frame. The setting is now called "Fast hooking budget ms per frame".

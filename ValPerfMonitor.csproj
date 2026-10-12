@@ -6,7 +6,7 @@
     <AssemblyName>ValPerfMonitor</AssemblyName>
     <RootNamespace>ValPerfMonitor</RootNamespace>
     <Nullable>disable</Nullable>
-    <Version>1.0.3</Version>
+    <Version>1.0.4</Version>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <DebugType>none</DebugType>
