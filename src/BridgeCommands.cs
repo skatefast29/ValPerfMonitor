@@ -4,9 +4,9 @@ using System.Linq;
 namespace ValPerfMonitor
 {
     /// <summary>
-    /// Commands for ValBridge (an AI-agent test bridge, separate mod), so a test can be run and read without
-    /// pressing keys. ValBridge finds methods with this attribute by name; this mod doesn't reference it, and
-    /// without ValBridge installed (or when the game wasn't started through it) nothing here is ever called.
+    /// Commands for ValAgentBridge (an AI-agent test bridge, separate mod), so a test can be run and read without
+    /// pressing keys. ValAgentBridge finds methods with this attribute by name; this mod doesn't reference it, and
+    /// without ValAgentBridge installed (or when the game wasn't started through it) nothing here is ever called.
     /// </summary>
     [AttributeUsage(AttributeTargets.Method)]
     internal sealed class BridgeToolAttribute : Attribute

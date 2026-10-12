@@ -2,7 +2,7 @@
  "name": "ab-test-example",
  "screenshotOnFail": true,
  "steps": [
-  { "note": "Example ValBridge test script for ValPerfMonitor. Use a throwaway character and world: it pins time and weather and turns on god mode. Replace YourWorld / YourCharacter and the mod name, then run it with ValBridge's test/run_file." },
+  { "note": "Example ValAgentBridge test script for ValPerfMonitor. Use a throwaway character and world: it pins time and weather and turns on god mode. Replace YourWorld / YourCharacter and the mod name, then run it with ValAgentBridge's test/run_file." },
   { "call": "world/enter", "args": { "world": "YourWorld", "character": "YourCharacter" } },
   { "waitUntil": { "call": "perf/status" }, "until": [ { "path": "worldReady", "equals": true } ], "timeout": 120 },
   { "call": "perf/stop" },

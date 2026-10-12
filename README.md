@@ -8,12 +8,12 @@ It answers questions like: which mod costs the most frame time? Which one makes 
 - Valheim 1.0 (Unity 6, Mono) with BepInExPack_Valheim 5.4.23 or newer.
 - Client side only. It measures whatever mods are installed; it needs none of them.
 
-## Recommended: ValBridge
-The monitor works on its own, and [ValBridge](https://github.com/skatefast29/ValBridge) works without it, but they go well together. ValBridge lets an AI agent (or a script) drive the running game: start it, load a world, move the player, pin the weather. With both installed, the agent can run the monitor's tests, read the results and repeat them the same way every time, with no one at the keyboard. See [Remote control](#remote-control-valbridge) for the commands the monitor adds, and `examples/` for a test script to start from.
+## Recommended: ValAgentBridge
+The monitor works on its own, and [ValAgentBridge](https://github.com/skatefast29/ValAgentBridge) works without it, but they go well together. ValAgentBridge lets an AI agent (or a script) drive the running game: start it, load a world, move the player, pin the weather. With both installed, the agent can run the monitor's tests, read the results and repeat them the same way every time, with no one at the keyboard. See [Remote control](#remote-control-valagentbridge) for the commands the monitor adds, and `examples/` for a test script to start from.
 
 ## Installation
 The release zip has two parts, and both are needed:
-- `plugins/ValPerfMonitor.dll`: the monitor.
+- `plugins/ValPerfMonitor.dll`: the monitor. It shows up twice in the BepInEx log: `ValPerfMonitor` and `ValPerfMonitor early start`, a small part that starts before every other mod and only does something when the [startup split](#also-recorded) is on.
 - `patchers/ValPerfMonitor.Preloader.dll`: a tiny helper that starts before any mod loads, so each mod's startup time can be measured. It patches nothing.
 
 **Gale / r2modman:** *Import → local mod* and pick the zip. **Manual:** copy `ValPerfMonitor.dll` to `BepInEx/plugins/ValPerfMonitor/` and `ValPerfMonitor.Preloader.dll` to `BepInEx/patchers/ValPerfMonitor/`.
@@ -21,7 +21,7 @@ The release zip has two parts, and both are needed:
 Use a separate test profile. The monitor attaches thousands of small hooks while it measures; it is not meant to stay installed for normal play.
 
 ## Quick start
-1. Launch, load a world, go to the spot you want to test.
+1. Launch, load a world, go to the spot you want to test. A few seconds after you load in, the monitor attaches its hooks: the game stutters for about 10 s (those frames are never counted).
 2. Press **F11**, type a label such as `all mods`, choose **Full suite**, press **Start**, and stand still for about 4 minutes.
 3. Change one thing (remove a mod, change a setting), go to the same spot, run the suite again with a new label.
 4. Open `BepInEx/ValPerfMonitor/compare.html` and pick the two runs.
@@ -94,8 +94,8 @@ Hotkeys still work without the panel: **Ctrl+F11** starts a new capture in the s
 ## If the game crashes while it hooks
 Hooking a method makes the game compile it again, and on Unity's Mono runtime a few methods abort the game when that happens. The monitor writes the method it is about to hook to `BepInEx/ValPerfMonitor/hooking-in-progress.txt` first. After a crash, the next launch adds that method to `skip-methods.txt` and never hooks it again, so each bad method can crash the game at most once. Leave both files alone; delete a line from `skip-methods.txt` to retry that method.
 
-## Remote control (ValBridge)
-With [ValBridge](https://github.com/skatefast29/ValBridge) installed and the game started through it, an agent can run tests: `perf/status`, `perf/start_suite` (label, seconds per mode), `perf/stop`, `perf/results`, `perf/load_times`, `perf/split_startup` (which mods to split on the next launch), `perf/patches_on`, `perf/alloc_check`, `perf/slow_objects`, `perf/objects` (what is loaded right now, by prefab), `perf/worldgen_cost` (how much a world-generation mod such as Riverheim adds to the alternative biome check during world load), and A/B tests with `perf/ab_test` / `perf/ab_result` (take a mod's patches off and put them back in turns, to see whether it really costs frame time; rounds where the weather changed, the player moved or objects loaded are left out, and extra rounds are added when the answer is unclear). Without ValBridge these do nothing.
+## Remote control (ValAgentBridge)
+With [ValAgentBridge](https://github.com/skatefast29/ValAgentBridge) installed and the game started through it, an agent can run tests: `perf/status`, `perf/start_suite` (label, seconds per mode), `perf/stop`, `perf/results`, `perf/load_times`, `perf/split_startup` (which mods to split on the next launch), `perf/patches_on`, `perf/alloc_check`, `perf/slow_objects`, `perf/objects` (what is loaded right now, by prefab), `perf/worldgen_cost` (how much a world-generation mod such as Riverheim adds to the alternative biome check during world load), and A/B tests with `perf/ab_test` / `perf/ab_result` (take a mod's patches off and put them back in turns, to see whether it really costs frame time; rounds where the weather changed, the player moved or objects loaded are left out, and extra rounds are added when the answer is unclear). Without ValAgentBridge these do nothing. `examples/ab-test-example.json` is a test script to start from.
 
 ## Configuration
 `BepInEx/config/valheimmods.ValPerfMonitor.cfg`, created on first launch. Everything has a working default; the most useful settings:
@@ -104,6 +104,8 @@ With [ValBridge](https://github.com/skatefast29/ValBridge) installed and the gam
 - `Seconds per mode`: length of each step of the full suite.
 - `Excluded mod GUIDs`: mods to leave unmeasured.
 - `Measure mod coroutines`, `Track network messages`, `Memory check every (seconds)`: switch the extra recordings off.
+- `Split startup of these mods`, `Split startup of the slowest mods`: the startup split for the next launch (off by default).
+- `Fast hooking budget ms per frame` (40) and `Hooking budget ms per frame` (8): how much time per frame goes into attaching hooks, when they all go on at once (entering a world, tests) and for small top-ups while playing. Higher = done sooner, with a heavier stutter.
 
 ## Build from source
 Needs the .NET SDK (any recent version), Valheim, and a BepInEx profile (the DLLs are referenced from the game and the profile, never copied into this repository).
@@ -126,7 +128,7 @@ dotnet build -c Release -p:ValheimDir="D:\Games\Valheim" -p:GaleProfile="C:\path
 ## Source layout
 | Folder | What |
 |---|---|
-| `src/` | The plugin: `Plugin.cs` (frame loop, captures, suite), `Probe.cs` (the per-call hook), `Instrumenter.cs` (finds and hooks methods), `Stats.cs`, `Capture.cs`, `Report.cs` (CSV and HTML), `Overlay.cs` (F11 panel and live HUD), `LoadTimes.cs`, `NetworkStats.cs`, `MemoryTracker.cs`, `SafetyGuard.cs` (crash protection while hooking) |
+| `src/` | The plugin: `Plugin.cs` (frame loop, captures, suite), `Probe.cs` (the per-call hook), `Instrumenter.cs` (finds and hooks methods), `SafetyGuard.cs` (crash protection while hooking), `Stats.cs`, `Capture.cs`, `Report.cs` (CSV and HTML), `Overlay.cs` (F11 panel and live HUD), `LoadTimes.cs`, `LoadSteps.cs` and `LoadPatches.cs` (loading split by step and by mod), `StartupDetail.cs` (startup split and the early-start plugin), `SpawnParts.cs` and `ObjectLoads.cs` (slow spawns, loaded objects), `NetworkStats.cs`, `MemoryTracker.cs`, `AbTest.cs`, `AllocCheck.cs`, `WorldGenCost.cs`, `BridgeCommands.cs` (the perf/* commands) |
 | `preloader/` | The startup-timing helper (a BepInEx preloader patcher) |
 
 ## License
