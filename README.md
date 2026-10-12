@@ -57,6 +57,7 @@ Hotkeys still work without the panel: **Ctrl+F11** starts a new capture in the s
 ## Also recorded
 - **Load times.** Launch to a settled main menu, split into steps, plus each mod's own loading time (needs `ValPerfMonitor.Preloader.dll` in `BepInEx\patchers`, included). Every world load: until you are in the world, until the loading screen is gone, and until the game stops hitching (3 s without a frame over 100 ms). Every logout.
 - **Loading steps.** Startup, world load and logout split by the game's own big steps (item database, prefab registry, world file, locations, player spawn...), each including the mod patches on it, and the slow startup and world-load steps are split into each mod's own patches on them and the game's own code (`load_steps.csv`, `load_step_mods.csv`).
+- **A slow mod's startup, split into its own methods.** Name mods in the config (`6 - Startup split`: mod names or GUIDs, or "the N slowest mods from the last launch") and on the next launch every method of their own code is timed while they start up: total time (with what it calls) and own time. Results in the log, `startup_methods.csv` and `perf/load_times`; the timers are removed once the main menu has settled. Bundled helper libraries (ItemManager, ServerSync...) are not timed; their time shows in the mod method that calls them.
 - **Coroutines.** Mods' step-by-step background routines are timed like their other code (hook type `Coroutine`).
 - **Network messages.** Every RPC by name, with the mod that handles it, how often and how many KB, plus the connection's total KB/s. In single player nothing crosses a network, but the messages still cost CPU.
 - **Memory leak check.** Once a minute (never during timed tests): game objects, textures, meshes, materials, sounds, scripts per mod, and memory. A leak is a count that keeps rising while the number of loaded objects stays about the same.
@@ -67,7 +68,7 @@ Hotkeys still work without the panel: **Ctrl+F11** starts a new capture in the s
 - `runs.csv`: the same data for Excel.
 - `<session>\load_steps.csv`: the loading steps per startup, world load and logout.
 - `startup_times.csv`, `world_load_times.csv`, `logout_times.csv`: one row per launch / load / logout, across sessions.
-- `<session>\startup_mods.csv`: each mod's loading time. `<session>\memory.csv`, `memory_by_mod.csv`: the leak check.
+- `<session>\startup_mods.csv`: each mod's loading time. `<session>\startup_methods.csv`: the startup split, when it is on. `<session>\memory.csv`, `memory_by_mod.csv`: the leak check.
 - `<session>\<NN_Mode_label>\`, one folder per capture:
   - `report.html`: charts and sortable tables.
   - `frames.csv`: per 10 s: FPS, p50/p95/p99/max frame time, monitor cost, GC, heap, draw calls, triangles, CPU/GPU time (when the game exposes it), biome, object count, nearby building pieces, weather.
@@ -94,7 +95,7 @@ Hotkeys still work without the panel: **Ctrl+F11** starts a new capture in the s
 Hooking a method makes the game compile it again, and on Unity's Mono runtime a few methods abort the game when that happens. The monitor writes the method it is about to hook to `BepInEx/ValPerfMonitor/hooking-in-progress.txt` first. After a crash, the next launch adds that method to `skip-methods.txt` and never hooks it again, so each bad method can crash the game at most once. Leave both files alone; delete a line from `skip-methods.txt` to retry that method.
 
 ## Remote control (ValBridge)
-With [ValBridge](https://github.com/skatefast29/ValBridge) installed and the game started through it, an agent can run tests: `perf/status`, `perf/start_suite` (label, seconds per mode), `perf/stop`, `perf/results`, `perf/load_times`, `perf/patches_on`, `perf/alloc_check`, `perf/slow_objects`, `perf/objects` (what is loaded right now, by prefab), `perf/worldgen_cost` (how much a world-generation mod such as Riverheim adds to the alternative biome check during world load), and A/B tests with `perf/ab_test` / `perf/ab_result` (take a mod's patches off and put them back in turns, to see whether it really costs frame time; rounds where the weather changed, the player moved or objects loaded are left out, and extra rounds are added when the answer is unclear). Without ValBridge these do nothing.
+With [ValBridge](https://github.com/skatefast29/ValBridge) installed and the game started through it, an agent can run tests: `perf/status`, `perf/start_suite` (label, seconds per mode), `perf/stop`, `perf/results`, `perf/load_times`, `perf/split_startup` (which mods to split on the next launch), `perf/patches_on`, `perf/alloc_check`, `perf/slow_objects`, `perf/objects` (what is loaded right now, by prefab), `perf/worldgen_cost` (how much a world-generation mod such as Riverheim adds to the alternative biome check during world load), and A/B tests with `perf/ab_test` / `perf/ab_result` (take a mod's patches off and put them back in turns, to see whether it really costs frame time; rounds where the weather changed, the player moved or objects loaded are left out, and extra rounds are added when the answer is unclear). Without ValBridge these do nothing.
 
 ## Configuration
 `BepInEx/config/valheimmods.ValPerfMonitor.cfg`, created on first launch. Everything has a working default; the most useful settings:
@@ -116,7 +117,7 @@ python package.py
 - `Deploy=true` also copies them into the profile's `plugins` and `patchers` folders.
 - `package.py` (Python 3) makes the Thunderstore-format zip in `dist/`.
 
-Paths default to a Steam install and a Gale profile named "Performance Test". Override them on the command line:
+Paths default to a Steam install and Gale's `Default` profile. Override them on the command line:
 ```
 dotnet build -c Release -p:ValheimDir="D:\Games\Valheim" -p:GaleProfile="C:\path\to\profile"
 ```

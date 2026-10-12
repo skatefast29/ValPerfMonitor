@@ -54,6 +54,16 @@ namespace ValPerfMonitor
             return new { success = p.Suite != null, label = p.CfgLabel.Value, secondsPerMode = p.CfgSuiteSeconds.Value };
         }
 
+        [BridgeTool("perf/split_startup", "On the next launch, split these mods' startup into their own methods (comma-separated names or GUIDs) and/or the N slowest mods of this launch; empty and 0 = off. Results in perf/load_times after restart")]
+        private static object SplitStartup(string mods = "", int slowest = 0)
+        {
+            var p = P;
+            if (p == null) return new { success = false, error = "monitor not started" };
+            p.CfgSplitStartupMods.Value = mods ?? "";
+            p.CfgSplitStartupSlowest.Value = Math.Max(0, Math.Min(20, slowest));
+            return new { success = true, mods = p.CfgSplitStartupMods.Value, slowest = p.CfgSplitStartupSlowest.Value, note = "takes effect on the next game launch" };
+        }
+
         [BridgeTool("perf/stop", "Stop whatever is recording and save it")]
         private static object Stop()
         {
@@ -95,6 +105,13 @@ namespace ValPerfMonitor
                 slowestMods = l.Mods.OrderByDescending(m => m.Seconds).Take(10).Select(m => new { m.Name, seconds = Round(m.Seconds) }).ToList(),
                 startupSteps = l.StartupSteps.Take(10).Select(s => new { step = s.label, s.calls, seconds = Round(s.seconds) }).ToList(),
                 startupModsInSteps = l.StartupStepMods.Take(20).Select(s => new { s.step, s.mod, s.calls, seconds = Round(s.seconds) }).ToList(),
+                startupSplit = StartupDetail.Mods.Select(m => new
+                {
+                    mod = m.Name, timedMethods = m.Methods,
+                    slowest = StartupDetail.Results.Where(r => r.Mod == m.Name).Take(15)
+                        .Select(r => new { method = r.Name, r.Calls, totalSeconds = Round(StartupDetail.Seconds(r.Total)), ownSeconds = Round(StartupDetail.Seconds(r.Self)) }).ToList(),
+                }).ToList(),
+                startupSplitPending = StartupDetail.Active && !StartupDetail.Finished,
                 worldLoads = l.WorldLoads.Select(w => new
                 {
                     w.When, spawnSeconds = Round(w.SpawnSeconds), screenGoneSeconds = Round(w.ScreenSeconds), hitchesStoppedSeconds = Round(w.SmoothSeconds), w.Hitches,

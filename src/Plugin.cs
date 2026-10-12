@@ -17,7 +17,7 @@ namespace ValPerfMonitor
     {
         public const string Guid = "valheimmods.ValPerfMonitor";
         public const string Name = "ValPerfMonitor";
-        public const string Version = "1.0.1";
+        public const string Version = "1.0.2";
 
         internal static Plugin Instance;
         internal ModRegistry Registry;
@@ -45,10 +45,11 @@ namespace ValPerfMonitor
         internal ConfigEntry<OverlayMode> CfgOverlay;
         internal ConfigEntry<bool> CfgCoroutines, CfgNetwork, CfgSplitSpawns;
         internal ConfigEntry<float> CfgSplitSpawnMs;
-        internal ConfigEntry<string> CfgExtraMethods;
+        internal ConfigEntry<string> CfgExtraMethods, CfgSplitStartupMods;
+        internal ConfigEntry<int> CfgSplitStartupSlowest;
         internal ConfigEntry<bool> CfgUnityCallbacks, CfgGameSystems, CfgCompact, CfgRecordOnLaunch, CfgSuiteAlloc, CfgSuiteTrace, CfgSuiteHideOverlay;
         internal ConfigEntry<KeyboardShortcut> CfgToggleKey, CfgRestartKey, CfgSuiteKey, CfgOverlayKey;
-        internal ConfigEntry<float> CfgInterval, CfgSummaryInterval, CfgFrameSpikeMs, CfgOwnerSpikeMs, CfgOwnerSpikeKb, CfgPatchBudgetMs,
+        internal ConfigEntry<float> CfgInterval, CfgSummaryInterval, CfgFrameSpikeMs, CfgOwnerSpikeMs, CfgOwnerSpikeKb, CfgPatchBudgetMs, CfgTestPatchBudgetMs,
                                     CfgWarmup, CfgSwitchWarmup, CfgWorldSettle, CfgMonitorExcludeMs, CfgSuiteSeconds, CfgBenchmarkSeconds, CfgScale;
         internal ConfigEntry<float> CfgMemorySeconds;
         internal ConfigEntry<int> CfgWindowFrames, CfgRows, CfgFontSize, CfgPosX, CfgPosY, CfgMaxTraces;
@@ -107,10 +108,14 @@ namespace ValPerfMonitor
             CfgNetwork = Config.Bind("2 - Measuring", "Track network messages", true, "Count network messages (RPCs) per name and per mod, with their size. Not in Baseline.");
             CfgGameSystems = Config.Bind("2 - Measuring", "Measure game systems", true, "Also measure Valheim's own update loops (about 200 methods) so mods can be compared against the base game. Restart required.");
             CfgPatchBudgetMs = Config.Bind("2 - Measuring", "Hooking budget ms per frame", 8f, "Time per frame spent attaching probes. Those frames are never counted.");
+            CfgTestPatchBudgetMs = Config.Bind("2 - Measuring", "Hooking budget ms per frame during tests", 40f, "Same, while a test suite or A/B test runs (you stand still then, so short stutters don't matter). Higher = probes attached sooner; the game runs at a low frame rate until hooking is done.");
             CfgWarmup = Config.Bind("2 - Measuring", "Warm-up after hooking (seconds)", 5f, "After probes are attached, frames are not counted for this long: the game compiles each rebuilt method the first time it runs, which shows up as short hitches for a few seconds.");
             CfgSwitchWarmup = Config.Bind("2 - Measuring", "Warm-up after mode switch (seconds)", 2f, "Switching between modes that keep the same probes needs no recompiling; this just lets the switch frame and the first report write settle.");
             CfgWorldSettle = Config.Bind("2 - Measuring", "World settle (seconds)", 5f, "After spawning in a world, wait this long before attaching probes so the world finishes loading first.");
             CfgMonitorExcludeMs = Config.Bind("2 - Measuring", "Exclude frames where monitor used more than ms", 1f, "Frames where this monitor itself used more main-thread time than this are left out instead of corrected.");
+            // Read by the early-start plugin on the next launch (see StartupDetail); bound here too so config managers show them.
+            CfgSplitStartupMods = Config.Bind(StartupDetail.Section, StartupDetail.ModsKey, "", StartupDetail.ModsHelp);
+            CfgSplitStartupSlowest = Config.Bind(StartupDetail.Section, StartupDetail.SlowestKey, 0, new ConfigDescription(StartupDetail.SlowestHelp, new AcceptableValueRange<int>(0, 20)));
             CfgWindowFrames = Config.Bind("2 - Measuring", "Overlay window frames", 300, new ConfigDescription("Recent frames the overlay averages over. Restart required.", new AcceptableValueRange<int>(60, 3600)));
 
             CfgInterval = Config.Bind("3 - Logging", "Interval seconds", 10f, "How often frames.csv and timeline.csv get a new row.");
@@ -309,7 +314,8 @@ namespace ValPerfMonitor
             if (!LoadPatches.Armed && FejdStartup.instance != null && ZNet.instance == null && LoadPatches.Arm(atMainMenu: true))
                 _heavy = true;
 
-            if (Instrumenter.Drain(CfgPatchBudgetMs.Value))
+            float budget = Suite != null || Ab != null ? Mathf.Max(CfgPatchBudgetMs.Value, CfgTestPatchBudgetMs.Value) : CfgPatchBudgetMs.Value;
+            if (Instrumenter.Drain(budget))
             {
                 _heavy = true;
                 _wasPending = true;
@@ -321,7 +327,7 @@ namespace ValPerfMonitor
                 BeginWarmup();
             }
             // Splitting slow spawns into parts: hooks a few startup methods at a time, after the main probes.
-            if (Instrumenter.Pending == 0 && SpawnParts.Drain(CfgPatchBudgetMs.Value))
+            if (Instrumenter.Pending == 0 && SpawnParts.Drain(budget))
                 _heavy = true;
 
             float now = Time.realtimeSinceStartup;
@@ -619,6 +625,19 @@ namespace ValPerfMonitor
             foreach (var m in l.Mods.OrderByDescending(m => m.Seconds).Take(5))
                 Logger.LogInfo($"  {m.Seconds,7:0.00} s  {m.Name}");
             LogSteps("Startup steps after the mods loaded", l.StartupSteps, l.StartupStepMods);
+            if (StartupDetail.Active)
+            {
+                StartupDetail.Finish();
+                Writer.Write(Path.Combine(SessionFolder, "startup_methods.csv"), StartupDetail.Csv());
+                foreach (var mod in StartupDetail.Mods)
+                {
+                    var load = l.Mods.FirstOrDefault(m => string.Equals(m.Guid, mod.Guid, StringComparison.OrdinalIgnoreCase));
+                    Logger.LogInfo($"  Startup of {mod.Name}{(load != null ? $" ({load.Seconds:0.00} s)" : "")}, slowest of its own methods (total includes what they call; own = without the timed methods they call):");
+                    foreach (var s in StartupDetail.Results.Where(r => r.Mod == mod.Name && StartupDetail.Seconds(r.Total) >= 0.02).Take(10))
+                        Logger.LogInfo($"     {StartupDetail.Seconds(s.Total),6:0.00} s  {s.Name}  (own {StartupDetail.Seconds(s.Self):0.00} s, {s.Calls}x)");
+                }
+                Logger.LogInfo($"  Full list: {Path.Combine(SessionFolder, "startup_methods.csv")}. Timers removed.");
+            }
             WriteSteps("startup", l.StartupSteps, l.ModsToMenu + (double.IsNaN(l.MenuSettle) ? 0 : l.MenuSettle), l.StartupStepMods);
         }
 

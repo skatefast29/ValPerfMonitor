@@ -48,6 +48,14 @@ namespace ValPerfMonitor
         private readonly HashSet<MethodBase> _seenTargets = new HashSet<MethodBase>();
         private readonly Queue<MethodBase> _rebuild = new Queue<MethodBase>();
         private readonly HashSet<MethodBase> _rebuildQueued = new HashSet<MethodBase>();
+        // When each target was last rebuilt (sequence number). A rebuild made after a patch method was first
+        // probed stays valid for good: the detour marks that patch method non-inlinable, and the mark is never
+        // removed, even when the probe is taken off for Baseline. So a re-hook doesn't rebuild it again.
+        private readonly Dictionary<MethodBase, long> _rebuiltAt = new Dictionary<MethodBase, long>();
+        private long _seq;
+        // Hooking statistics for the log line when a round of hooking finishes.
+        private long _hookStart, _attachTicks, _rebuildTicks;
+        private int _hookFrames, _attachCount, _rebuildCount, _rebuildsNotNeeded;
         private bool _includeUnity, _includeGame, _scannedGameExtras, _scannedCoroutines;
 
         /// <summary>Also measure mods' coroutines (set before the first Scan).</summary>
@@ -388,20 +396,37 @@ namespace ValPerfMonitor
                 _guard?.AllDone();
                 return false;
             }
-            long deadline = Stopwatch.GetTimestamp() + (long)(budgetMs * Stopwatch.Frequency / 1000.0);
+            long start = Stopwatch.GetTimestamp();
+            if (_hookStart == 0) _hookStart = start;
+            _hookFrames++;
+            long deadline = start + (long)(budgetMs * Stopwatch.Frequency / 1000.0);
             while (_pending.Count > 0)
             {
+                long t0 = Stopwatch.GetTimestamp();
                 Attach(_pending.Dequeue());
-                if (Stopwatch.GetTimestamp() > deadline)
+                long t1 = Stopwatch.GetTimestamp();
+                _attachTicks += t1 - t0;
+                _attachCount++;
+                if (t1 > deadline)
                     return true;
             }
             while (_rebuild.Count > 0)
             {
+                long t0 = Stopwatch.GetTimestamp();
                 Rebuild(_rebuild.Dequeue());
-                if (Stopwatch.GetTimestamp() > deadline)
+                long t1 = Stopwatch.GetTimestamp();
+                _rebuildTicks += t1 - t0;
+                _rebuildCount++;
+                if (t1 > deadline)
                     return true;
             }
             _guard?.AllDone();
+            double freq = Stopwatch.Frequency;
+            _log.LogInfo($"Hooking took {(Stopwatch.GetTimestamp() - _hookStart) / freq:0.0} s over {_hookFrames} frames: {_attachCount} probes attached in {_attachTicks / freq:0.0} s, " +
+                         $"{_rebuildCount} patched game methods rebuilt in {_rebuildTicks / freq:0.0} s" +
+                         (_rebuildsNotNeeded > 0 ? $" ({_rebuildsNotNeeded} rebuilds skipped, already done earlier)." : "."));
+            _hookStart = _attachTicks = _rebuildTicks = 0;
+            _hookFrames = _attachCount = _rebuildCount = _rebuildsNotNeeded = 0;
             _log.LogInfo($"Measuring {Instrumented} methods: {_registry.Visible.Count(m => !m.IsGame && m.Instrumented > 0)} mods, " +
                          $"{_registry.Visible.Count(m => m.IsGame && m.Instrumented > 0)} game systems ({Failed} could not be patched, {Unsafe} skipped as unsafe, {MenuOnly} main-menu-only patches left out).");
             if (_failedNames.Count > 0)
@@ -452,9 +477,11 @@ namespace ValPerfMonitor
                 PatchProbe(source.Method);
                 source.Attached = true;
                 source.Mod.Instrumented++;
+                if (source.FirstHookSeq < 0)
+                    source.FirstHookSeq = ++_seq;
                 if (MayBeInlined(source.Method))
                     foreach (var target in source.TargetMethods)
-                        QueueRebuild(target);
+                        QueueRebuild(source, target);
             }
             catch (Exception e)
             {
@@ -481,6 +508,8 @@ namespace ValPerfMonitor
             _pending.Clear();
             _rebuild.Clear();
             _rebuildQueued.Clear();
+            _hookStart = _attachTicks = _rebuildTicks = 0; // an unfinished round of hooking is not reported
+            _hookFrames = _attachCount = _rebuildCount = _rebuildsNotNeeded = 0;
             // One method at a time: removing a probe re-runs other mods' transpilers on that method, and if
             // that fails for one method the rest must still be removed (UnpatchSelf would stop there).
             // A probe that can't be removed stays attached and is not attached a second time later.
@@ -527,7 +556,7 @@ namespace ValPerfMonitor
             source.TargetMethods.Add(target);
             source.Targets.Add(Describe(target));
             if (source.Attached && MayBeInlined(source.Method))
-                QueueRebuild(target); // patch method already measured, now also used on a new target
+                QueueRebuild(source, target); // patch method already measured, now also used on a new target
         }
 
         /// <summary>
@@ -545,8 +574,13 @@ namespace ValPerfMonitor
             catch { return true; }
         }
 
-        private void QueueRebuild(MethodBase target)
+        private void QueueRebuild(SourceInfo source, MethodBase target)
         {
+            if (_rebuiltAt.TryGetValue(target, out long at) && at > source.FirstHookSeq)
+            {
+                _rebuildsNotNeeded++;
+                return;
+            }
             if (_rebuildQueued.Add(target))
                 _rebuild.Enqueue(target);
         }
@@ -563,7 +597,11 @@ namespace ValPerfMonitor
             if (_guard != null && _guard.IsSkipped(target))
                 return;
             _guard?.Before('R', target);
-            try { _harmony.Patch(target); }
+            try
+            {
+                _harmony.Patch(target);
+                _rebuiltAt[target] = ++_seq;
+            }
             catch (Exception e) { _log.LogDebug($"Could not rebuild {Describe(target)}: {e.Message}"); }
         }
 

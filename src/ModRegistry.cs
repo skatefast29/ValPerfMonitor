@@ -53,6 +53,7 @@ namespace ValPerfMonitor
         public string Kind;          // Prefix / Postfix / Finalizer / Update / ... / Game
         public string Name;          // Type.Method
         public bool Attached;
+        public long FirstHookSeq = -1; // order in which its probe was first attached (see Instrumenter.Rebuild)
         public bool LiveClass;       // its class has live objects (or is core game code): already loaded, safe to hook
         public readonly List<string> Targets = new List<string>(); // game methods it is attached to
         public readonly List<MethodBase> TargetMethods = new List<MethodBase>();

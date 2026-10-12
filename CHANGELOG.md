@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.2
+
+- **Startup split for slow mods:** name mods in the config (or pick "the N slowest from the last launch") and on the next launch their startup is broken down into their own methods, so you can see what inside a mod makes it slow to load. Results in the log, `startup_methods.csv` and `perf/load_times`; `perf/split_startup` sets it from ValBridge. Off by default.
+- **Faster hooking in tests:** while a test suite or A/B test runs, probes are attached with up to 40 ms per frame instead of 8 (new setting "Hooking budget ms per frame during tests"). The game stutters until hooking is done; those frames were never counted anyway.
+- **No repeated rebuilds:** game methods rebuilt the first time probes went on are not rebuilt again when the probes come back after a Baseline step. Later suites hook noticeably faster.
+- The log now says how long hooking took and where the time went.
+- Build files default to Gale's `Default` profile.
+
 ## 1.0.1
 
 - No changes to the mod. Full changelog and source: https://github.com/skatefast29/ValPerfMonitor/blob/main/CHANGELOG.md

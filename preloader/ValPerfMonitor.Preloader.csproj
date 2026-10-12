@@ -8,14 +8,14 @@
     <AssemblyName>ValPerfMonitor.Preloader</AssemblyName>
     <RootNamespace>ValPerfMonitor.Preloader</RootNamespace>
     <Nullable>disable</Nullable>
-    <Version>1.0.1</Version>
+    <Version>1.0.2</Version>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <DebugType>none</DebugType>
   </PropertyGroup>
 
   <PropertyGroup>
-    <GaleProfile Condition="'$(GaleProfile)' == ''">$(APPDATA)\com.kesomannen.gale\valheim\profiles\Performance Test</GaleProfile>
+    <GaleProfile Condition="'$(GaleProfile)' == ''">$(APPDATA)\com.kesomannen.gale\valheim\profiles\Default</GaleProfile>
     <BepInExCore>$(GaleProfile)\BepInEx\core</BepInExCore>
   </PropertyGroup>
 

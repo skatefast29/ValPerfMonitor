@@ -99,7 +99,10 @@ namespace ValPerfMonitor
                 else if (e.text.StartsWith("Loading ["))
                 {
                     long end = i + 1 < events.Count ? events[i + 1].ticks : e.ticks;
-                    Mods.Add(new ModLoad { Name = ModName(e.text), Guid = ModGuid(e.text), Seconds = (end - e.ticks) * _msPerTick / 1000 });
+                    string guid = ModGuid(e.text);
+                    // Attaching the startup-split timers happens inside the mod's load window; it isn't the mod's time.
+                    double seconds = (end - e.ticks) * _msPerTick / 1000 - StartupDetail.HookSeconds(guid);
+                    Mods.Add(new ModLoad { Name = ModName(e.text), Guid = guid, Seconds = Math.Max(0, seconds) });
                 }
             }
             if (chainStart != 0) BepInExToMods = (chainStart - first.ticks) * _msPerTick / 1000;
