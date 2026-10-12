@@ -421,6 +421,7 @@ namespace ValPerfMonitor
                     return true;
             }
             _guard?.AllDone();
+            FullRound = false;
             double freq = Stopwatch.Frequency;
             _log.LogInfo($"Hooking took {(Stopwatch.GetTimestamp() - _hookStart) / freq:0.0} s over {_hookFrames} frames: {_attachCount} probes attached in {_attachTicks / freq:0.0} s, " +
                          $"{_rebuildCount} patched game methods rebuilt in {_rebuildTicks / freq:0.0} s" +
@@ -508,6 +509,7 @@ namespace ValPerfMonitor
             _pending.Clear();
             _rebuild.Clear();
             _rebuildQueued.Clear();
+            FullRound = false;
             _hookStart = _attachTicks = _rebuildTicks = 0; // an unfinished round of hooking is not reported
             _hookFrames = _attachCount = _rebuildCount = _rebuildsNotNeeded = 0;
             // One method at a time: removing a probe re-runs other mods' transpilers on that method, and if
@@ -544,10 +546,14 @@ namespace ValPerfMonitor
             if (Hooked)
                 return;
             Hooked = true;
+            FullRound = true;
             RehookCalibration();
             foreach (var s in _all)
                 _pending.Enqueue(s);
         }
+
+        /// <summary>True while every probe is being attached at once (entering a world, after Baseline), as opposed to small top-ups.</summary>
+        public bool FullRound { get; private set; }
 
         private void AddTarget(SourceInfo source, MethodBase target)
         {

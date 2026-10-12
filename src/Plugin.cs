@@ -17,7 +17,7 @@ namespace ValPerfMonitor
     {
         public const string Guid = "valheimmods.ValPerfMonitor";
         public const string Name = "ValPerfMonitor";
-        public const string Version = "1.0.2";
+        public const string Version = "1.0.3";
 
         internal static Plugin Instance;
         internal ModRegistry Registry;
@@ -107,8 +107,8 @@ namespace ValPerfMonitor
             CfgSplitSpawnMs = Config.Bind("2 - Measuring", "Split spawns slower than ms", 2f, "Objects whose spawn took at least this long get split into parts.");
             CfgNetwork = Config.Bind("2 - Measuring", "Track network messages", true, "Count network messages (RPCs) per name and per mod, with their size. Not in Baseline.");
             CfgGameSystems = Config.Bind("2 - Measuring", "Measure game systems", true, "Also measure Valheim's own update loops (about 200 methods) so mods can be compared against the base game. Restart required.");
-            CfgPatchBudgetMs = Config.Bind("2 - Measuring", "Hooking budget ms per frame", 8f, "Time per frame spent attaching probes. Those frames are never counted.");
-            CfgTestPatchBudgetMs = Config.Bind("2 - Measuring", "Hooking budget ms per frame during tests", 40f, "Same, while a test suite or A/B test runs (you stand still then, so short stutters don't matter). Higher = probes attached sooner; the game runs at a low frame rate until hooking is done.");
+            CfgPatchBudgetMs = Config.Bind("2 - Measuring", "Hooking budget ms per frame", 8f, "Time per frame spent attaching probes for small top-ups while playing (mods that patch late, newly seen kinds of objects). Those frames are never counted.");
+            CfgTestPatchBudgetMs = Config.Bind("2 - Measuring", "Fast hooking budget ms per frame", 40f, "Used when all probes go on at once (a few seconds after entering a world, and when a test puts them back after Baseline) and during tests. Higher = done sooner; the game stutters until hooking is done (usually under 10 s). Those frames are never counted.");
             CfgWarmup = Config.Bind("2 - Measuring", "Warm-up after hooking (seconds)", 5f, "After probes are attached, frames are not counted for this long: the game compiles each rebuilt method the first time it runs, which shows up as short hitches for a few seconds.");
             CfgSwitchWarmup = Config.Bind("2 - Measuring", "Warm-up after mode switch (seconds)", 2f, "Switching between modes that keep the same probes needs no recompiling; this just lets the switch frame and the first report write settle.");
             CfgWorldSettle = Config.Bind("2 - Measuring", "World settle (seconds)", 5f, "After spawning in a world, wait this long before attaching probes so the world finishes loading first.");
@@ -314,7 +314,7 @@ namespace ValPerfMonitor
             if (!LoadPatches.Armed && FejdStartup.instance != null && ZNet.instance == null && LoadPatches.Arm(atMainMenu: true))
                 _heavy = true;
 
-            float budget = Suite != null || Ab != null ? Mathf.Max(CfgPatchBudgetMs.Value, CfgTestPatchBudgetMs.Value) : CfgPatchBudgetMs.Value;
+            float budget = Instrumenter.FullRound || Suite != null || Ab != null ? Mathf.Max(CfgPatchBudgetMs.Value, CfgTestPatchBudgetMs.Value) : CfgPatchBudgetMs.Value;
             if (Instrumenter.Drain(budget))
             {
                 _heavy = true;
