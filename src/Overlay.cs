@@ -18,7 +18,7 @@ namespace ValPerfMonitor
         private enum SortBy { Avg, Peak, Calls, Capture }
         private enum Filter { Mods, Game, All }
         private enum Tab { Run, Live, Results, LoadMemory }
-        private enum RunKind { Suite, Single, Continuous }
+        private enum RunKind { Suite, Single, Continuous, Objects }
 
         private static readonly Dictionary<CaptureMode, string> ModeHelp = new Dictionary<CaptureMode, string>
         {
@@ -124,7 +124,7 @@ namespace ValPerfMonitor
                 : p.Instrumenter.Pending > 0 ? $"<color=#ffcc55>● Hooking {p.Instrumenter.Pending} methods…</color>"
                 : p.WarmingUp ? $"<color=#ffcc55>● Warming up {p.WarmupLeft:0}s</color> (not counted yet)"
                 : "<color=#ff5555>● Recording</color>";
-            string what = p.Suite != null ? p.Suite.Status(p) : p.Ab != null ? $"{p.Ab.Status} · {p.Current.MeasuredSeconds:0}/{p.Ab.Seconds:0}s"
+            string what = p.Suite != null ? p.Suite.Status(p) : ObjectCosts.Running != null ? ObjectCosts.Running.Status : p.Ab != null ? $"{p.Ab.Status} · {p.Current.MeasuredSeconds:0}/{p.Ab.Seconds:0}s"
                         : $"{p.Current.Mode}, continuous · {p.Current.MeasuredSeconds:0}s counted";
             return $"{state}   {what}";
         }
@@ -234,7 +234,7 @@ namespace ValPerfMonitor
             GUILayout.BeginHorizontal();
             GUILayout.Label(_status, _label);
             GUILayout.FlexibleSpace();
-            if (Cap != null && GUILayout.Button(_plugin.Suite != null || _plugin.Ab != null ? "■ Stop test" : "■ Stop & save", GUILayout.Width(120)))
+            if (Cap != null && GUILayout.Button(_plugin.Suite != null || _plugin.Ab != null || ObjectCosts.Running != null ? "■ Stop test" : "■ Stop & save", GUILayout.Width(120)))
                 _plugin.StopTest();
             GUILayout.EndHorizontal();
             if (Time.realtimeSinceStartup < _plugin.ToastUntil && _plugin.Toast.Length > 0)
@@ -279,6 +279,21 @@ namespace ValPerfMonitor
                 $"{p.CfgSuiteSeconds.Value:0} s each. About {Math.Ceiling(suiteSteps * (p.CfgSuiteSeconds.Value + p.CfgWarmup.Value + 10) / 60):0} min. Stays in one spot for comparable numbers.");
             KindCard(RunKind.Single, "Single test", $"One mode for {p.CfgBenchmarkSeconds.Value:0} s, then stops and saves.");
             KindCard(RunKind.Continuous, "Continuous recording", "One mode until you press Stop. Good for recording a whole play session (logs every 10 s).");
+            KindCard(RunKind.Objects, "Most expensive objects", "Times each object's per-frame code (creatures, fires, smelters, mod objects) for 20 s and ranks objects and prefabs. Results in the log and object_costs.csv.");
+
+            if (_kind == RunKind.Objects)
+            {
+                GUILayout.Space(8);
+                GUILayout.Label("Stand where the game feels slow. The normal per-mod recording pauses while this runs, then stops.", _wrap);
+                GUILayout.Space(6);
+                if (GUILayout.Button("▶  Find the most expensive objects" + (Cap != null ? "   (ends the current recording)" : ""), _big, GUILayout.Height(38)))
+                {
+                    var oc = p.StartObjectCosts(20f);
+                    if (oc.Error != null) p.ShowToast("Object costs: " + oc.Error);
+                    p.SetPanel(false);
+                }
+                return;
+            }
 
             if (_kind != RunKind.Suite)
             {

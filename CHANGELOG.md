@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.0
+
+- **Most expensive objects** (new in the F11 Run tab, and `perf/object_costs` / `perf/object_costs_result`): for 20 s, each object's per-frame code (the game's update loops with the mod patches on them, and mods' own Update) is timed per object, then objects and prefabs are ranked (all loaded torches together, the single worst creature...). Results in the log and `object_costs.csv`, with an instanceId for ValAgentBridge's debug tools. The normal recording pauses while it runs (and is not saved as a run, since the timers add a little to every call); its timers come off afterwards.
+- **A/B test for objects**: `perf/ab_test` can now switch an object off and on in turns (`objectId`, `objectPath`) or every loaded copy of a prefab (`prefab`), to see whether it really costs frame time. Refuses the player, the game's core objects and anything holding mods' plugins.
+- **Errors per mod**: errors and warnings in the BepInEx log are counted per mod (a mod's own log name, or for game and Unity errors the first mod in the stack trace). Each capture's report and `compare.html` show errors per minute and the mod with the most; `log_errors.csv` lists every distinct message; `perf/log_errors` for the bridge. A mod throwing an error every frame costs CPU.
+- **Crash report at launch**: if the last session didn't close normally, the next launch says so in the log and on screen at the main menu, with Unity's crash report folder when it crashed, the code that was running (and the first mod in it; only a real crash names a mod), and the last errors. Saved in `last_crash.txt`; the saved session log is named `_crashed` or `_not-closed`. `perf/session_logs` lists past sessions (how each ended, errors per log name), searches them and reads their last lines.
+
 ## 1.0.5
 
 - **Past session logs are kept** (new setting "Keep past session logs" under "3 - Logging", on by default): BepInEx empties `LogOutput.log` every time the game starts, so only the last session's log is ever there. Now each launch first saves the previous session's log in `BepInEx/ValPerfMonitor/session_logs`, named by when that session ended, including sessions that ended in a crash. Copies older than "Days to keep past session logs" (14) are deleted. Done by the preloader, before any mod loads; nothing runs while you play. Switch it off to go back to BepInEx's single log.

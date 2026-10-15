@@ -52,6 +52,8 @@ namespace ValPerfMonitor
             P(j, "probeBytesPerCall", AllocCounter.Exact && c.Mode != CaptureMode.Baseline ? ins.ChildOverhead[(int)CaptureMode.Allocations] : double.NaN);
             P(j, "context", ctx.Short);
             P(j, "limiter", Plugin.FrameLimiter());
+            var log = LogWatch.ForCapture(c, reg);
+            P(j, "logErrors", log.errors); P(j, "logWarnings", log.warnings); P(j, "logTop", log.top);
             j.Append("\"counters\":{");
             bool first = true;
             foreach (var cn in counters.Counters)
@@ -253,6 +255,7 @@ const cards=[[f(D.fps,1),'FPS (monitor removed)'],[f(D.fps1low,1),'1% low FPS'],
 if(!base){cards.push([f(D.mods,alloc?1:2)+' '+U,(alloc?'mods alloc / frame':'mods / frame')]);cards.push([f(D.game,alloc?1:2)+' '+U,(alloc?'game alloc / frame':'game systems / frame')])}
 cards.push([f(D.gcPerMin,1),'GCs per minute']);cards.push([f(D.monitorMs+D.overheadMs,3)+' ms','monitor cost / frame (removed)']);
 for(const k in D.counters)cards.push([D.counters[k],k.replace(/_/g,' ')]);
+if(D.logErrors!=null)cards.push([D.logErrors+(D.logWarnings?' <small>+'+D.logWarnings+' warn.</small>':''),'log errors'+(D.logTop?' (most: '+esc(D.logTop)+')':'')]);
 $('#cards').innerHTML=cards.map(c=>`<div class=card><b>${c[0]}</b><span>${c[1]}</span></div>`).join('');
 chart($('#c1'),[{n:'FPS',c:'var(--good)',get:p=>p[1]},{n:'99th pct ms',c:'var(--bad)',get:p=>p[3]}],{h:200,guides:[{v:60,c:'var(--good)',t:'60'},{v:30,c:'var(--warn)',t:'30'}]});
 if(!base)chart($('#c2'),[{n:'mods '+U,c:'var(--accent)',get:p=>p[4]},{n:'game '+U,c:'var(--game)',get:p=>p[5]}],{h:180});
@@ -301,11 +304,11 @@ RUNS.forEach((r,i)=>r.i=i);let A=RUNS.findIndex(r=>r.mode==='Baseline');if(A<0)A
 function draw(){table($('#runs'),[{t:'A',k:'i',f:x=>`<input type=radio name=a ${x.i===A?'checked':''} data-i=${x.i}>`},{t:'B',k:'i',f:x=>`<input type=radio name=b ${x.i===B?'checked':''} data-i=${x.i}>`},
 {t:'Started',k:'started',l:1},{t:'Mode',k:'mode',l:1},{t:'Label',k:'label',l:1},{t:'Secs',k:'measuredSeconds',f:x=>f(x.measuredSeconds,0)},{t:'FPS',k:'fps',f:x=>f(x.fps,1)},{t:'1% low',k:'fps1low',f:x=>f(x.fps1low,1)},
 {t:'p99 ms',k:'p99',f:x=>f(x.p99,1)},{t:'Mods',k:'mods',f:x=>x.mods==null?'–':f(x.mods,3)+' '+x.unit},{t:'Game',k:'game',f:x=>x.game==null?'–':f(x.game,3)+' '+x.unit},{t:'GC/min',k:'gcPerMin',f:x=>f(x.gcPerMin,1)},
-{t:'Plugins',k:'n',f:x=>x.plugins.length},{t:'Valheim',k:'gameVersion',l:1,f:x=>esc(x.gameVersion||'?')},{t:'Where',k:'context',l:1},{t:'',k:'folder',f:x=>`<a href=""${esc(x.folder)}/report.html"">report</a>`}],RUNS,'started');
+{t:'Errors/min',k:'logErrorsPerMin',f:x=>x.logErrorsPerMin==null?'–':`<span title=""${esc(x.logTop?'most: '+x.logTop:'')}"">${f(x.logErrorsPerMin,1)}</span>`},{t:'Plugins',k:'n',f:x=>x.plugins.length},{t:'Valheim',k:'gameVersion',l:1,f:x=>esc(x.gameVersion||'?')},{t:'Where',k:'context',l:1},{t:'',k:'folder',f:x=>`<a href=""${esc(x.folder)}/report.html"">report</a>`}],RUNS,'started');
 document.querySelectorAll('input[name=a]').forEach(e=>e.onchange=()=>{A=+e.dataset.i;draw()});document.querySelectorAll('input[name=b]').forEach(e=>e.onchange=()=>{B=+e.dataset.i;draw()});cmp()}
 function d(a,b,dec,higherBetter){if(a==null||b==null||isNaN(a)||isNaN(b))return '–';const x=b-a;const good=higherBetter?x>0:x<0;return `<span class=""${Math.abs(x)<1e-9?'':good?'pos':'neg'}"">${x>0?'+':''}${x.toFixed(dec)}</span>`}
 function cmp(){const a=RUNS[A],b=RUNS[B];if(!a||!b)return;$('#cmpH').textContent=`A: ${a.mode} ${a.label||''} (${a.started})  →  B: ${b.mode} ${b.label||''} (${b.started})`;
-$('#cmpCards').innerHTML=[['FPS',a.fps,b.fps,1,1],['1% low FPS',a.fps1low,b.fps1low,1,1],['p99 frame ms',a.p99,b.p99,1,0],['GC / min',a.gcPerMin,b.gcPerMin,1,0]]
+$('#cmpCards').innerHTML=[['FPS',a.fps,b.fps,1,1],['1% low FPS',a.fps1low,b.fps1low,1,1],['p99 frame ms',a.p99,b.p99,1,0],['GC / min',a.gcPerMin,b.gcPerMin,1,0],['Log errors / min',a.logErrorsPerMin,b.logErrorsPerMin,1,0]]
 .map(c=>`<div class=card><b>${f(c[2],c[3])} <small>${d(c[1],c[2],c[3],c[4])}</small></b><span>${c[0]} (A ${f(c[1],c[3])})</span></div>`).join('');
 const pa=new Set(a.plugins),pb=new Set(b.plugins);const rem=[...pa].filter(x=>!pb.has(x)),add=[...pb].filter(x=>!pa.has(x));
 $('#diff').innerHTML=((a.gameVersion||'?')!==(b.gameVersion||'?')?`<p><b>Different game version:</b> A ${esc(a.gameVersion||'unknown')}, B ${esc(b.gameVersion||'unknown')}. Differences may come from the game update.</p>`:'')+(rem.length?`<p><b>Only in A:</b> ${esc(rem.join(', '))}</p>`:'')+(add.length?`<p><b>Only in B:</b> ${esc(add.join(', '))}</p>`:'')+(!rem.length&&!add.length?'<p>Same mod list in both runs.</p>':'');
@@ -327,6 +330,8 @@ draw();</script></main></body></html>");
             P(j, "started", c.Started.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)); P(j, "session", sessionName); P(j, "capture", c.Number);
             P(j, "mode", c.Mode.ToString()); P(j, "label", c.Label); P(j, "unit", c.Stats.Unit); P(j, "measuredSeconds", c.MeasuredSeconds);
             P(j, "fps", s.Fps); P(j, "fps1low", s.Fps1Low); P(j, "p99", s.P99); P(j, "gcPerMin", s.GcPerMin);
+            var log = LogWatch.ForCapture(c, reg);
+            P(j, "logErrorsPerMin", log.perMin); P(j, "logTop", log.top);
             P(j, "mods", b ? double.NaN : s.Mods); P(j, "game", b ? double.NaN : s.Game);
             P(j, "context", ctx.Short); P(j, "folder", folderRel.Replace('\\', '/'));
             P(j, "gameVersion", RunStamp.GameVersion); P(j, "modsFingerprint", RunStamp.ModsFingerprint(reg));

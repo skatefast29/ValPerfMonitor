@@ -37,6 +37,18 @@ namespace ValPerfMonitor
             try { return Instances_(scene).Count; } catch { return -1; }
         }
 
+        /// <summary>The loaded copies of one prefab (by its name's hash), as game objects.</summary>
+        public static List<GameObject> LoadedOfPrefab(int hash)
+        {
+            var list = new List<GameObject>();
+            var scene = ZNetScene.instance;
+            if (scene == null || Instances_ == null) return list;
+            foreach (var kv in Instances_(scene))
+                if (kv.Key != null && kv.Value != null && kv.Key.GetPrefab() == hash)
+                    list.Add(kv.Value.gameObject);
+            return list;
+        }
+
         private static T Safe<T>(Func<T> f) where T : class
         {
             try { return f(); } catch { return null; }

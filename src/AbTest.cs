@@ -6,12 +6,14 @@ using System.Reflection;
 using System.Text;
 using BepInEx.Logging;
 using HarmonyLib;
+using UnityEngine;
 
 namespace ValPerfMonitor
 {
     /// <summary>
-    /// "Does this mod (or this one method) actually cost anything?" answered without a restart: its Harmony
-    /// patches are taken off (or one of its methods is skipped) and put back, in turns, while Baseline
+    /// "Does this mod (or this one method, or this object) actually cost anything?" answered without a restart:
+    /// its Harmony patches are taken off (or one of its methods is skipped, or the objects are switched off) and
+    /// put back, in turns, while Baseline
     /// captures (no probes) measure the game. Turns go on, off, off, on, ... so a slow drift (time of day,
     /// weather, memory growing) lands on both sides equally, and the spread between turns of the same kind
     /// shows how big a difference has to be before it is real.
@@ -66,6 +68,10 @@ namespace ValPerfMonitor
 
         private readonly List<Removed> _removed = new List<Removed>();
         private readonly List<MethodInfo> _skipped = new List<MethodInfo>();
+        // Objects switched off instead (one object, or every loaded copy of a prefab). Only the ones that were on
+        // are switched back on, and only while they still exist (the game may unload them in the meantime).
+        private readonly List<GameObject> _objects = new List<GameObject>();
+        private readonly List<GameObject> _switchedOff = new List<GameObject>();
         private readonly Harmony _skipHarmony;
         private readonly ManualLogSource _log;
         private readonly string _crumbPath;
@@ -83,9 +89,11 @@ namespace ValPerfMonitor
 
         public int PatchCount => _removed.Count;
         public int SkipCount => _skipped.Count;
+        public int ObjectCount => _objects.Count;
         public IEnumerable<string> Describe() =>
             _removed.Select(r => $"{r.Type} {Instrumenter.Describe(r.Patch.PatchMethod)} on {Instrumenter.Describe(r.Original)}")
-                    .Concat(_skipped.Select(m => $"skip {Instrumenter.Describe(m)}"));
+                    .Concat(_skipped.Select(m => $"skip {Instrumenter.Describe(m)}"))
+                    .Concat(_objects.Where(o => o != null).Take(50).Select(o => $"switch off {PathOf(o.transform)} (instanceId {o.GetInstanceID()})"));
 
         private static readonly MethodInfo SkipVoid = AccessTools.Method(typeof(AbTest), nameof(SkipPrefix));
         private static readonly MethodInfo SkipBool = AccessTools.Method(typeof(AbTest), nameof(SkipPrefixKeepGoing));
@@ -96,8 +104,10 @@ namespace ValPerfMonitor
         /// <summary>
         /// mod: plugin name or GUID whose Harmony patches are taken off. patchesOn: only its patches on this
         /// game method ("Type:Method"). skip: instead, a mod method ("Namespace.Type:Method") to skip entirely.
+        /// objectId / objectPath / prefab: instead, switch off one Unity object (with its children) or every
+        /// loaded copy of a prefab.
         /// </summary>
-        public AbTest(string mod, string patchesOn, string skip, float seconds, int rounds, string label,
+        public AbTest(string mod, string patchesOn, string skip, int objectId, string objectPath, string prefab, float seconds, int rounds, string label,
                       ModRegistry registry, string harmonyId, string rootFolder, ManualLogSource log)
         {
             _log = log;
@@ -120,10 +130,12 @@ namespace ValPerfMonitor
                 What = entry.Name + (string.IsNullOrWhiteSpace(patchesOn) ? " (all its patches)" : $" (its patches on {patchesOn.Trim()})");
                 FindPatches(entry, patchesOn, registry, harmonyId);
             }
-            else Error = "say which mod (mod) or which mod method to skip (skip)";
+            else if (objectId != 0 || !string.IsNullOrWhiteSpace(objectPath) || !string.IsNullOrWhiteSpace(prefab))
+                What = FindObjects(objectId, objectPath, prefab);
+            else Error = "say which mod (mod), which mod method to skip (skip), or which object to switch off (objectId, objectPath or prefab)";
             Label = (string.IsNullOrWhiteSpace(label) ? "AB " + What : label.Trim());
-            if (Error == null && _removed.Count == 0 && _skipped.Count == 0)
-                Error = "nothing to take off: no matching patches or methods found";
+            if (Error == null && _removed.Count == 0 && _skipped.Count == 0 && _objects.Count == 0)
+                Error = "nothing to take off: no matching patches, methods or objects found";
         }
 
         private ModEntry FindMod(string name, ModRegistry registry)
@@ -185,6 +197,98 @@ namespace ValPerfMonitor
             }
             if (_skipped.Count == 0 && Error == null)
                 Error = $"'{spec}': no method that can be skipped safely (it must return nothing, or be a Harmony prefix)";
+        }
+
+        /// <summary>Finds the objects to switch off; returns what is tested, or null with Error set.</summary>
+        private string FindObjects(int id, string path, string prefab)
+        {
+            if (!string.IsNullOrWhiteSpace(prefab))
+            {
+                string name = prefab.Trim();
+                var scene = ZNetScene.instance;
+                if (scene == null) { Error = "not in a world"; return null; }
+                if (scene.GetPrefab(name) == null) { Error = $"no prefab called '{name}' (use the names perf/objects lists)"; return null; }
+                var copies = GameContext.LoadedOfPrefab(name.GetStableHashCode());
+                if (copies.Count == 0) { Error = $"no copies of {name} are loaded here"; return null; }
+                foreach (var go in copies)
+                {
+                    string why = Refuse(go);
+                    if (why != null) { Error = $"{name}: {why}"; return null; }
+                }
+                _objects.AddRange(copies);
+                return $"prefab {name} ({copies.Count} loaded copies switched off)";
+            }
+            GameObject target = null;
+            if (id != 0)
+            {
+                var found = Resources.InstanceIDToObject(id);
+                target = found as GameObject;
+                if (target == null && found is Component c && c != null) target = c.gameObject;
+                if (target == null) { Error = $"no live object with instanceId {id}"; return null; }
+            }
+            else
+            {
+                target = FindPath(path.Trim().Trim('/'), out string error);
+                if (target == null) { Error = error; return null; }
+            }
+            string refused = Refuse(target);
+            if (refused != null) { Error = refused; return null; }
+            _objects.Add(target);
+            return $"object {PathOf(target.transform)}";
+        }
+
+        /// <summary>Why an object must not be switched off, or null.</summary>
+        private static string Refuse(GameObject go)
+        {
+            var player = Player.m_localPlayer;
+            if (player != null && (go == player.gameObject || player.transform.IsChildOf(go.transform)))
+                return "that holds the player character";
+            foreach (var c in go.GetComponentsInChildren<Component>(true))
+            {
+                if (c == null) continue;
+                // BepInEx_Manager holds every mod's plugin, this monitor and the bridge: nothing could switch it back on.
+                if (c is BepInEx.BaseUnityPlugin || c.GetType().Assembly == typeof(Plugin).Assembly || c.GetType().Assembly.GetName().Name.StartsWith("ValAgentBridge"))
+                    return "that holds mods' plugins (or this monitor or the bridge), which would stop them";
+                if (c is ZNet || c is ZNetScene || c is Game || c is ZoneSystem || c is EnvMan)
+                    return "that is one of the game's core objects; switching it off stops the world";
+            }
+            return null;
+        }
+
+        /// <summary>An object by its path of names from a root ("_GameMain/GUI"), in the loaded scenes or the kept-across-scenes one.</summary>
+        private static GameObject FindPath(string path, out string error)
+        {
+            error = null;
+            var parts = path.Split('/');
+            if (parts.Length == 0 || parts[0].Length == 0) { error = "empty objectPath"; return null; }
+            var roots = new List<GameObject>();
+            for (int i = 0; i < UnityEngine.SceneManagement.SceneManager.sceneCount; i++)
+            {
+                var s = UnityEngine.SceneManagement.SceneManager.GetSceneAt(i);
+                if (s.isLoaded) roots.AddRange(s.GetRootGameObjects());
+            }
+            var kept = Plugin.Instance != null ? Plugin.Instance.gameObject.scene : default;
+            if (kept.IsValid() && kept.isLoaded) roots.AddRange(kept.GetRootGameObjects());
+            var matches = roots.Where(r => r != null && r.name == parts[0]).Select(r => r.transform).ToList();
+            for (int i = 1; i < parts.Length && matches.Count > 0; i++)
+            {
+                var next = new List<Transform>();
+                foreach (var t in matches)
+                    for (int k = 0; k < t.childCount; k++)
+                        if (t.GetChild(k).name == parts[i]) next.Add(t.GetChild(k));
+                matches = next;
+            }
+            if (matches.Count == 0) { error = $"no object at '{path}' (paths as debug/scene_tree shows them)"; return null; }
+            if (matches.Count > 1) { error = $"'{path}' matches {matches.Count} objects; use objectId (from debug/find_objects) to pick one, or prefab for all copies"; return null; }
+            return matches[0].gameObject;
+        }
+
+        private static string PathOf(Transform t)
+        {
+            var names = new List<string>();
+            for (var x = t; x != null; x = x.parent) names.Add(x.name);
+            names.Reverse();
+            return string.Join("/", names.ToArray());
         }
 
         private static bool IsHarmonyPrefix(MethodInfo m)
@@ -400,6 +504,12 @@ namespace ValPerfMonitor
                 try { _skipHarmony.Patch(m, prefix: new HarmonyMethod(m.ReturnType == typeof(bool) ? SkipBool : SkipVoid) { priority = Priority.First }); }
                 catch (Exception e) { _log.LogWarning($"A/B test: could not skip {Instrumenter.Describe(m)}: {e.Message}"); }
             }
+            foreach (var go in _objects)
+            {
+                if (go == null || !go.activeSelf) continue;
+                try { go.SetActive(false); _switchedOff.Add(go); }
+                catch (Exception e) { _log.LogWarning($"A/B test: could not switch off {go.name}: {e.Message}"); }
+            }
         }
 
         /// <summary>Put everything back as it was. Safe to call more than once.</summary>
@@ -438,7 +548,14 @@ namespace ValPerfMonitor
                 }
                 catch (Exception e) { failed++; _log.LogError($"A/B test: could not put back {Instrumenter.Describe(p.PatchMethod)} on {Instrumenter.Describe(r.Original)}: {e.Message}"); }
             }
-            if (failed > 0) _log.LogError($"A/B test: {failed} patch(es) could not be put back. Restart the game before playing on.");
+            foreach (var go in _switchedOff)
+            {
+                if (go == null) continue; // unloaded by the game meanwhile: it comes back as normal when reloaded
+                try { go.SetActive(true); }
+                catch (Exception e) { failed++; _log.LogError($"A/B test: could not switch {go.name} back on: {e.Message}"); }
+            }
+            _switchedOff.Clear();
+            if (failed > 0) _log.LogError($"A/B test: {failed} patch(es) or object(s) could not be put back. Restart the game before playing on.");
             else try { File.Delete(_crumbPath); } catch { }
         }
 

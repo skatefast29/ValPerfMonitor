@@ -225,17 +225,17 @@ namespace ValPerfMonitor
             };
         }
 
-        [BridgeTool("perf/ab_test", "Find out if a mod (or one of its methods) really costs frame time: take its Harmony patches off (mod, optionally only those on patchesOn = Type:Method) or skip one mod method (skip = Namespace.Type:Method), and put them back, in turns, measuring each turn with no probes. Stand still; read the result with perf/ab_result")]
-        private static object AbTestTool(string mod = "", string patchesOn = "", string skip = "", float seconds = 20f, int rounds = 3, string label = "")
+        [BridgeTool("perf/ab_test", "Find out if a mod, one of its methods, or an object really costs frame time: take the mod's Harmony patches off (mod, optionally only those on patchesOn = Type:Method), skip one mod method (skip = Namespace.Type:Method), or switch off an object with its children (objectId from debug/find_objects, objectPath as debug/scene_tree shows it, or prefab = every loaded copy, names as in perf/objects), and put it back, in turns, measuring each turn with no probes. Stand still; read the result with perf/ab_result")]
+        private static object AbTestTool(string mod = "", string patchesOn = "", string skip = "", int objectId = 0, string objectPath = "", string prefab = "", float seconds = 20f, int rounds = 3, string label = "")
         {
             var p = P;
             if (p == null) return new { success = false, error = "monitor not started" };
-            var t = p.StartAb(mod, patchesOn, skip, seconds, rounds, label);
+            var t = p.StartAb(mod, patchesOn, skip, seconds, rounds, label, objectId, objectPath, prefab);
             if (t.Error != null) return new { success = false, error = t.Error };
             return new
             {
                 success = true, what = t.What, turns = t.Plan.Count, secondsPerTurn = t.Seconds,
-                patchesTakenOff = t.PatchCount, methodsSkipped = t.SkipCount, list = t.Describe().Take(30).ToList(),
+                patchesTakenOff = t.PatchCount, methodsSkipped = t.SkipCount, objectsSwitchedOff = t.ObjectCount, list = t.Describe().Take(30).ToList(),
                 expectedMinutes = Math.Round(t.Plan.Count * (t.Seconds + p.CfgSwitchWarmup.Value + 3) / 60.0, 1),
             };
         }
@@ -258,6 +258,115 @@ namespace ValPerfMonitor
                     garbageKbPerFrame = double.IsNaN(x.GarbageKbPerFrame) ? (double?)null : Math.Round(x.GarbageKbPerFrame, 2), fps1Low = Math.Round(x.Fps1Low, 1), gcPerMin = Math.Round(x.GcPerMin, 1), slowFramesPerMin = Math.Round(x.SlowPerMin, 1),
                 }).ToList(),
                 verdict = t.Verdict, details = t.VerdictLines,
+            };
+        }
+
+        [BridgeTool("perf/object_costs", "Find the most expensive objects here: for a few seconds (default 20) time each object's per-frame code (game update loops and mods' Update, with the mod patches on them) per object, then rank objects and prefabs (all loaded copies together). Pauses the normal recording. Read with perf/object_costs_result; instanceIds work with debug/inspect_object and perf/ab_test objectId")]
+        private static object ObjectCostsTool(float seconds = 20f)
+        {
+            var p = P;
+            if (p == null) return new { success = false, error = "monitor not started" };
+            var oc = p.StartObjectCosts(seconds);
+            if (oc.Error != null) return new { success = false, error = oc.Error };
+            return new { success = true, seconds = oc.Seconds, expectedSeconds = Math.Round(oc.Seconds + 8, 0), note = "read the result with perf/object_costs_result" };
+        }
+
+        [BridgeTool("perf/object_costs_result", "Result of the running or last perf/object_costs: most expensive prefabs (all copies together) and single objects, ms of main-thread time per frame, with their parts, distance and instanceId")]
+        private static object ObjectCostsResult(int count = 20)
+        {
+            var oc = ObjectCosts.Running ?? ObjectCosts.Last;
+            if (oc == null) return new { success = false, error = "no object costs recording this session" };
+            if (!oc.Done) return new { success = true, done = false, status = oc.Status };
+            int n = Math.Max(1, count);
+            return new
+            {
+                success = oc.Error == null, error = oc.Error, done = true, methodsTimed = oc.MethodsTimed, frames = oc.Frames,
+                totalMsPerFrame = Math.Round(oc.TotalMs, 3), objects = oc.Objects.Count,
+                prefabs = oc.Prefabs.Take(n).Select(x => new { x.Prefab, copies = x.Objects, msPerFrame = Math.Round(x.Ms, 4), worstCopyMs = Math.Round(x.MaxMs, 4), modCode = x.Mods }).ToList(),
+                single = oc.Objects.Take(n).Select(x => new
+                {
+                    x.Prefab, x.InstanceId, msPerFrame = Math.Round(x.Ms, 4), callsPerFrame = Math.Round(x.CallsPerFrame, 1),
+                    distanceM = double.IsNaN(x.DistanceM) ? (double?)null : x.DistanceM, x.Path,
+                    parts = x.Parts.Select(t => $"{t.part} {t.ms:0.0000}").ToList(), modCode = x.Mods,
+                }).ToList(),
+                note = "Self time of per-frame methods per object, including the mod patches on them; the timers add a little to every call, so compare objects with each other. Mod patches on game methods are inside the game method's part (perf/ab_test with a mod shows those).",
+            };
+        }
+
+        [BridgeTool("perf/log_errors", "Errors and warnings in the BepInEx log this session, per mod (a mod's own log name, or for game/Unity errors the first mod in the stack trace), and the most repeated messages with their stack. Errors repeated every frame cost CPU")]
+        private static object LogErrors(int count = 15)
+        {
+            var p = P;
+            var w = LogWatch.Instance;
+            if (p == null || w == null) return new { success = false, error = "monitor not started" };
+            p.WriteLogErrors();
+            double minutes = Math.Max(1.0 / 60, LogWatch.Now / 60);
+            return new
+            {
+                success = true, errors = w.Errors, warnings = w.Warnings, errorsPerMinute = Math.Round(w.Errors / minutes, 2),
+                byMod = w.ByMod(p.Registry).Take(Math.Max(1, count)).Select(r => new
+                {
+                    r.Mod, r.Errors, r.Warnings, r.Exceptions, lastSeenSecondsAgo = Math.Round(LogWatch.Now - r.LastSeen, 0),
+                    example = r.Top?.Message,
+                }).ToList(),
+                messages = w.TopMessages(p.Registry, Math.Max(1, count)).Select(x => new
+                {
+                    x.mod, logName = x.entry.Source, x.entry.Level, x.count, message = x.entry.Message,
+                    perMinute = Math.Round(x.count / minutes, 1),
+                    stack = x.entry.Stack.Length == 0 ? null : x.entry.Stack.Split('\n').Take(5).ToList(),
+                }).ToList(),
+                distinctMessagesNotKept = w.Dropped,
+                file = System.IO.Path.Combine(p.SessionFolder, "log_errors.csv"),
+            };
+        }
+
+        [BridgeTool("perf/session_logs", "Past game sessions from their saved logs (newest first): when each ended, whether it closed normally, did not (froze, Task Manager) or crashed, and its errors and warnings with the log names that had the most errors. search = text to find in those logs (matching lines). log = a file name (or 'latest') to read its last lines. Also the report of the last session that did not close normally")]
+        private static object SessionLogsTool(int count = 10, string search = "", string log = "", int lines = 40)
+        {
+            var files = SessionCheck.SavedLogs();
+            var listed = files.Take(Math.Max(1, Math.Min(50, count))).ToList();
+            object matches = null;
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var found = new System.Collections.Generic.List<object>();
+                int total = 0;
+                foreach (var f in listed)
+                {
+                    int n = 0;
+                    foreach (var line in SessionCheck.ReadLines(f.FullName))
+                    {
+                        n++;
+                        if (line.IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        total++;
+                        if (found.Count < 60) found.Add(new { file = f.Name, line = n, text = line.Length > 300 ? line.Substring(0, 300) : line });
+                    }
+                }
+                matches = new { total, shown = found.Count, lines = found };
+            }
+            object tail = null;
+            if (!string.IsNullOrWhiteSpace(log))
+            {
+                var f = log.Trim().Equals("latest", StringComparison.OrdinalIgnoreCase) ? files.FirstOrDefault()
+                      : files.FirstOrDefault(x => x.Name.Equals(log.Trim(), StringComparison.OrdinalIgnoreCase) || x.Name.StartsWith(log.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (f == null) return new { success = false, error = $"no saved log '{log}'" };
+                var all = SessionCheck.ReadLines(f.FullName).ToList();
+                int take = Math.Max(1, Math.Min(300, lines));
+                tail = new { file = f.Name, totalLines = all.Count, lastLines = all.Skip(Math.Max(0, all.Count - take)).ToList() };
+            }
+            string crash = null;
+            try { if (System.IO.File.Exists(SessionCheck.CrashReportPath)) crash = System.IO.File.ReadAllText(SessionCheck.CrashReportPath); } catch { }
+            return new
+            {
+                success = true, folder = SessionCheck.LogFolder, savedLogs = files.Count,
+                sessions = listed.Select(f => SessionCheck.Summarize(f)).Select(s => new
+                {
+                    s.File, ended = s.Ended.ToString("yyyy-MM-dd HH:mm:ss"), s.Status, s.SizeKb, s.Errors, s.Warnings,
+                    mostErrors = s.ErrorSources.Select(e => $"{e.name} ({e.errors})").ToList(),
+                }).ToList(),
+                search = matches, log = tail,
+                lastCrashThisLaunch = SessionCheck.LastCrash != null, likelyMod = SessionCheck.LikelyMod,
+                lastCrashReport = crash,
+                note = "Errors here are per log name: game and Unity errors show as 'Unity Log'; perf/log_errors splits the current session by mod. Logs saved before ValPerfMonitor 1.1.0 are not checked for crashes.",
             };
         }
 

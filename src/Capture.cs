@@ -36,6 +36,8 @@ namespace ValPerfMonitor
         public readonly List<IntervalPoint> Points = new List<IntervalPoint>();
         public int TracesWritten;
         public bool Finished;
+        // How often each log message had been seen when the capture started (LogWatch), to count only this capture's.
+        public Dictionary<string, int> LogBefore;
 
         private readonly ModRegistry _registry;
         private readonly Instrumenter _instr;

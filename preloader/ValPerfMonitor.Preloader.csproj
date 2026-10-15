@@ -8,7 +8,7 @@
     <AssemblyName>ValPerfMonitor.Preloader</AssemblyName>
     <RootNamespace>ValPerfMonitor.Preloader</RootNamespace>
     <Nullable>disable</Nullable>
-    <Version>1.0.5</Version>
+    <Version>1.1.0</Version>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <DebugType>none</DebugType>

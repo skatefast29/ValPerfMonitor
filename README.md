@@ -13,8 +13,8 @@ The monitor works on its own, and [ValAgentBridge](https://github.com/skatefast2
 
 ## Installation
 The release zip has two parts, and both are needed:
-- `plugins/ValPerfMonitor.dll`: the monitor. It shows up twice in the BepInEx log: `ValPerfMonitor` and `ValPerfMonitor early start`, a small part that starts before every other mod and only does something when the [startup split](#also-recorded) is on.
-- `patchers/ValPerfMonitor.Preloader.dll`: a tiny helper that starts before any mod loads, so each mod's startup time can be measured (and the previous session's log can be saved before BepInEx empties it). It patches nothing.
+- `plugins/ValPerfMonitor.dll`: the monitor. It shows up twice in the BepInEx log: `ValPerfMonitor` and `ValPerfMonitor early start`, a small part that starts before every other mod so that errors while mods load are counted, and the [startup split](#also-recorded) can time them when it is on.
+- `patchers/ValPerfMonitor.Preloader.dll`: a tiny helper that starts before any mod loads, so each mod's startup time can be measured, the previous session's log can be saved before BepInEx empties it, and a session that didn't close normally is noticed. It patches nothing.
 
 **Gale / r2modman:** *Import → local mod* and pick the zip. **Manual:** copy `ValPerfMonitor.dll` to `BepInEx/plugins/ValPerfMonitor/` and `ValPerfMonitor.Preloader.dll` to `BepInEx/patchers/ValPerfMonitor/`.
 
@@ -43,7 +43,7 @@ The modes are kept separate on purpose. Allocation counting and trace recording 
 ## Test panel (F11)
 F11 opens the test panel. While it is open the mouse is free, the game ignores movement, camera and attack input (as when typing on a sign), and no frames are counted. Press F11 again or ✕ to close it.
 
-- **Run a test**: choose **Full suite**, **Single test** (one mode for a set time) or **Continuous recording** (until you press Stop), pick the mode, type a label (e.g. `all mods`, `without Seasons`), set the duration, and press **Start**. The panel closes and the test runs. A timed test saves its results and returns to idle when it finishes.
+- **Run a test**: choose **Full suite**, **Single test** (one mode for a set time), **Continuous recording** (until you press Stop) or **Most expensive objects** (see below), pick the mode, type a label (e.g. `all mods`, `without Seasons`), set the duration, and press **Start**. The panel closes and the test runs. A timed test saves its results and returns to idle when it finishes.
 - **Live view**: the graph and the ranked table of mods and game systems. Click a row to see its heaviest methods.
 - **Results**: captures finished this session (FPS, 1% low, heaviest mod) with a button for each report, plus **Open comparison page** and **Open logs folder**.
 - **Load times & memory**: startup time (and each mod's share), every world load and logout this session, and the memory leak check.
@@ -62,12 +62,16 @@ Hotkeys still work without the panel: **Ctrl+F11** starts a new capture in the s
 - **Network messages.** Every RPC by name, with the mod that handles it, how often and how many KB, plus the connection's total KB/s. In single player nothing crosses a network, but the messages still cost CPU.
 - **Memory leak check.** Once a minute (never during timed tests): game objects, textures, meshes, materials, sounds, scripts per mod, and memory. A leak is a count that keeps rising while the number of loaded objects stays about the same.
 - **Past session logs.** BepInEx empties its log at every launch; the monitor first saves the previous one (crashed sessions too), so earlier sessions can still be read.
+- **Crashes.** If a session didn't close normally, the next launch says so (log, and a note at the main menu): whether it crashed (with Unity's crash report and the code that was running, including the first mod in it) or was ended otherwise (froze and was closed, Task Manager, PC shut down), plus the last errors. Only a real crash names a mod, and that is where it happened, not always the cause. Kept in `last_crash.txt`.
+- **Errors per mod.** Errors and warnings in the log, per mod: a mod's own messages by its name, game and Unity errors by the first mod in their stack trace. Errors per minute and the worst mod are in every report and in `compare.html`. A mod throwing an error every frame costs CPU.
+- **Most expensive objects** (Run tab, about half a minute): each object's per-frame code is timed per object for 20 s, then objects and prefabs are ranked, e.g. all loaded torches together, or the one creature that costs the most. Times include the mod patches on that code; the game's central update loop shows as one row, as its own work can't be split per object. The normal recording pauses while it runs and is not saved as a run (its timers add a little to every call).
 - **Likely cause of every slow frame**: garbage collection, world save, teleport, objects loading, one mod or game system, or engine/rendering.
 
 ## Output: `BepInEx\ValPerfMonitor\`
 - `compare.html`: every capture from every session. Pick runs A and B to see FPS / 1% low changes, which mods were added or removed between them (and a warning when the game version differs), and per-mod changes. **Start here after testing.**
 - `runs.csv`: the same data for Excel.
-- `session_logs\`: a copy of each earlier session's BepInEx log (`LogOutput.log`), named by when that session ended, kept 14 days (`Keep past session logs`).
+- `session_logs\`: a copy of each earlier session's BepInEx log (`LogOutput.log`), named by when that session ended, kept 14 days (`Keep past session logs`). `_crashed` or `_not-closed` in the name: that session didn't close normally. `last_crash.txt`: the report on the last one that didn't.
+- `<session>\log_errors.csv`: every distinct error and warning this session, with its mod and count. `<session>\object_costs.csv`: the most expensive objects and prefabs.
 - `<session>\load_steps.csv`: the loading steps per startup, world load and logout.
 - `startup_times.csv`, `world_load_times.csv`, `logout_times.csv`: one row per launch / load / logout, across sessions.
 - `<session>\startup_mods.csv`: each mod's loading time. `<session>\startup_methods.csv`: the startup split, when it is on. `<session>\memory.csv`, `memory_by_mod.csv`: the leak check.
@@ -97,7 +101,7 @@ Hotkeys still work without the panel: **Ctrl+F11** starts a new capture in the s
 Hooking a method makes the game compile it again, and on Unity's Mono runtime a few methods abort the game when that happens. The monitor writes the method it is about to hook to `BepInEx/ValPerfMonitor/hooking-in-progress.txt` first. After a crash, the next launch adds that method to `skip-methods.txt` and never hooks it again, so each bad method can crash the game at most once. Leave both files alone; delete a line from `skip-methods.txt` to retry that method.
 
 ## Remote control (ValAgentBridge)
-With [ValAgentBridge](https://github.com/skatefast29/ValAgentBridge) installed and the game started through it, an agent can run tests: `perf/status`, `perf/start_suite` (label, seconds per mode), `perf/stop`, `perf/results`, `perf/load_times`, `perf/split_startup` (which mods to split on the next launch), `perf/patches_on`, `perf/alloc_check`, `perf/slow_objects`, `perf/objects` (what is loaded right now, by prefab), `perf/worldgen_cost` (how much a world-generation mod such as Riverheim adds to the alternative biome check during world load), and A/B tests with `perf/ab_test` / `perf/ab_result` (take a mod's patches off and put them back in turns, to see whether it really costs frame time; rounds where the weather changed, the player moved or objects loaded are left out, and extra rounds are added when the answer is unclear). Without ValAgentBridge these do nothing. `examples/ab-test-example.json` is a test script to start from.
+With [ValAgentBridge](https://github.com/skatefast29/ValAgentBridge) installed and the game started through it, an agent can run tests: `perf/status`, `perf/start_suite` (label, seconds per mode), `perf/stop`, `perf/results`, `perf/load_times`, `perf/split_startup` (which mods to split on the next launch), `perf/patches_on`, `perf/alloc_check`, `perf/slow_objects`, `perf/objects` (what is loaded right now, by prefab), `perf/worldgen_cost` (how much a world-generation mod such as Riverheim adds to the alternative biome check during world load), `perf/object_costs` / `perf/object_costs_result` (the most expensive objects and prefabs), `perf/log_errors` (errors per mod this session), `perf/session_logs` (past sessions: how each ended, their errors, search, last lines), and A/B tests with `perf/ab_test` / `perf/ab_result` (take a mod's patches off, or switch an object or every copy of a prefab off, and put it back in turns, to see whether it really costs frame time; rounds where the weather changed, the player moved or objects loaded are left out, and extra rounds are added when the answer is unclear). Without ValAgentBridge these do nothing. `examples/ab-test-example.json` is a test script to start from.
 
 ## Configuration
 `BepInEx/config/valheimmods.ValPerfMonitor.cfg`, created on first launch. Everything has a working default; the most useful settings:
@@ -131,8 +135,8 @@ dotnet build -c Release -p:ValheimDir="D:\Games\Valheim" -p:GaleProfile="C:\path
 ## Source layout
 | Folder | What |
 |---|---|
-| `src/` | The plugin: `Plugin.cs` (frame loop, captures, suite), `Probe.cs` (the per-call hook), `Instrumenter.cs` (finds and hooks methods), `SafetyGuard.cs` (crash protection while hooking), `Stats.cs`, `Capture.cs`, `Report.cs` (CSV and HTML), `Overlay.cs` (F11 panel and live HUD), `LoadTimes.cs`, `LoadSteps.cs` and `LoadPatches.cs` (loading split by step and by mod), `StartupDetail.cs` (startup split and the early-start plugin), `SpawnParts.cs` and `ObjectLoads.cs` (slow spawns, loaded objects), `NetworkStats.cs`, `MemoryTracker.cs`, `AbTest.cs`, `AllocCheck.cs`, `WorldGenCost.cs`, `BridgeCommands.cs` (the perf/* commands) |
-| `preloader/` | The startup-timing helper (a BepInEx preloader patcher) |
+| `src/` | The plugin: `Plugin.cs` (frame loop, captures, suite), `Probe.cs` (the per-call hook), `Instrumenter.cs` (finds and hooks methods), `SafetyGuard.cs` (crash protection while hooking), `Stats.cs`, `Capture.cs`, `Report.cs` (CSV and HTML), `Overlay.cs` (F11 panel and live HUD), `LoadTimes.cs`, `LoadSteps.cs` and `LoadPatches.cs` (loading split by step and by mod), `StartupDetail.cs` (startup split and the early-start plugin), `SpawnParts.cs` and `ObjectLoads.cs` (slow spawns, loaded objects), `NetworkStats.cs`, `MemoryTracker.cs`, `AbTest.cs`, `AllocCheck.cs`, `WorldGenCost.cs`, `ObjectCosts.cs` (most expensive objects), `LogWatch.cs` (errors per mod), `SessionCheck.cs` (crash report at launch), `BridgeCommands.cs` (the perf/* commands) |
+| `preloader/` | The startup-timing helper and the past-session logs and crash check (a BepInEx preloader patcher) |
 
 ## License
 MIT, see [LICENSE](LICENSE).

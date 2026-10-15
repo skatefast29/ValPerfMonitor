@@ -81,6 +81,8 @@ namespace ValPerfMonitor
         public int Pending => _pending.Count + _rebuild.Count;
         public int PatchedTargets => _seenTargets.Count;
         public int GameMethods => _all.Count(s => s.Mod.IsGame);
+        /// <summary>Everything found to measure, hooked or not (FirstHookSeq >= 0 once a probe went on without trouble).</summary>
+        public IEnumerable<SourceInfo> AllSources => _all;
         public int LastPatchedMethodCount { get; private set; } = -1;
 
         // Calibration results, per capture mode.

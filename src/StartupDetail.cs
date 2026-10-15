@@ -25,6 +25,8 @@ namespace ValPerfMonitor
 
         private void Awake()
         {
+            try { LogWatch.Start(); } // count errors and warnings from here on, while the other mods load
+            catch (Exception e) { Logger.LogWarning($"Error counting not started: {e.Message}"); }
             try { StartupDetail.Begin(Logger); }
             catch (Exception e) { Logger.LogWarning($"Startup split not started: {e.Message}"); }
         }

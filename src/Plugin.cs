@@ -17,7 +17,7 @@ namespace ValPerfMonitor
     {
         public const string Guid = "valheimmods.ValPerfMonitor";
         public const string Name = "ValPerfMonitor";
-        public const string Version = "1.0.5";
+        public const string Version = "1.1.0";
 
         internal static Plugin Instance;
         internal ModRegistry Registry;
@@ -142,6 +142,9 @@ namespace ValPerfMonitor
             CfgPosX = Config.Bind("5 - Overlay", "Position X", 20, "");
             CfgPosY = Config.Bind("5 - Overlay", "Position Y", 80, "");
 
+            LogWatch.Start(); // normally already started by the early-start plugin
+            SessionCheck.Running();
+            Application.quitting += SessionCheck.Closed;
             _harmony = new Harmony(Guid);
             LoadSteps.Attach(Guid + ".loadsteps", Logger); // before the menu loads, so its steps are timed too
             Registry = new ModRegistry(CfgWindowFrames.Value);
@@ -161,6 +164,8 @@ namespace ValPerfMonitor
             Loads = new LoadTimes(Logger, _awakeTicks);
 
             Registry.LoadPlugins(typeof(Plugin).Assembly);
+            try { SessionCheck.Report(Registry, Logger); }
+            catch (Exception e) { Logger.LogWarning($"Could not report on the last session: {e.Message}"); }
             AllocCounter.Init(Logger);
             Counters = new UnityCounters(Logger);
             var excluded = CfgExclude.Value.Split(',').Select(s => s.Trim()).Where(s => s.Length > 0);
@@ -351,7 +356,7 @@ namespace ValPerfMonitor
             // Not during timed tests: new hooks would restart the warm-up, and the walk is a hitch.
             bool scanDue = now >= _nextLiveScan && Instrumenter.Pending == 0 && Instrumenter.Hooked;
             bool memoryDue = CfgMemorySeconds.Value > 0 && now >= _nextMemory;
-            if ((scanDue || memoryDue) && Suite == null && Ab == null)
+            if ((scanDue || memoryDue) && Suite == null && Ab == null && ObjectCosts.Running == null)
             {
                 _heavy = true;
                 UnityEngine.Object[] behaviours = null;
@@ -373,6 +378,12 @@ namespace ValPerfMonitor
 
             Suite?.Tick(this);
             Ab?.Tick(this);
+            var oc = ObjectCosts.Running;
+            if (oc != null)
+            {
+                if (oc.Tick(Mathf.Max(CfgPatchBudgetMs.Value, CfgTestPatchBudgetMs.Value))) _heavy = true;
+                if (oc.Done) ObjectCostsFinished(oc);
+            }
 
             if (now >= _nextInterval)
             {
@@ -446,6 +457,7 @@ namespace ValPerfMonitor
             Probe.ClearFrame();
             GarbageConfidence.ResetRate();
             Current = new Capture(++_captureNumber, mode, label, SessionFolder, Registry, Instrumenter, Counters, Writer, Net, CfgWindowFrames.Value);
+            Current.LogBefore = LogWatch.Instance?.Snapshot();
             MonitorBytes = 0;
             Context.Sample(full: true);
             _warmupUntil = 0;
@@ -506,7 +518,7 @@ namespace ValPerfMonitor
         /// <summary>Stop whatever is running, save what was recorded, and go idle.</summary>
         internal void StopTest()
         {
-            bool wasSuite = Suite != null || Ab != null;
+            bool wasSuite = Suite != null || Ab != null || ObjectCosts.Running != null;
             AbortAb();
             Suite = null;
             FinishCapture();
@@ -609,6 +621,10 @@ namespace ValPerfMonitor
                                    (alloc ? $"  [{GarbageConfidence.ForMod(c.Mode, Registry.Sources.Where(x => x != null && x.Mod == r.Mod), r.Avg)}]" : ""));
                 if (alloc) Logger.LogInfo("  " + GarbageConfidence.Explain);
             }
+            var log = LogWatch.ForCapture(c, Registry);
+            if (log.errors > 0)
+                Logger.LogInfo($"  Errors in the log during this capture: {log.errors} ({log.perMin:0.0} per minute), most from {log.top}. Details: perf/log_errors or {Path.Combine(SessionFolder, "log_errors.csv")}");
+            WriteLogErrors();
             if (c.Stats.SpikeCount > 0)
                 Logger.LogInfo($"  Slow frames: {c.Stats.SpikeCount} ({string.Join(", ", c.Stats.CauseCounts.OrderByDescending(k => k.Value).Select(k => $"{k.Value} {k.Key}"))})");
             var net = c.Net.Top(3).ToList();
@@ -641,6 +657,9 @@ namespace ValPerfMonitor
                 }
                 Logger.LogInfo($"  Full list: {Path.Combine(SessionFolder, "startup_methods.csv")}. Timers removed.");
             }
+            if (SessionCheck.LastCrash != null)
+                ShowToast("Last session didn't close normally" + (SessionCheck.LikelyMod != null ? $" (likely involved: {SessionCheck.LikelyMod})" : "") +
+                          ". Details: BepInEx\\ValPerfMonitor\\last_crash.txt", 25f);
             WriteSteps("startup", l.StartupSteps, l.ModsToMenu + (double.IsNaN(l.MenuSettle) ? 0 : l.MenuSettle), l.StartupStepMods);
         }
 
@@ -682,6 +701,14 @@ namespace ValPerfMonitor
                 if (r.SplitSpawns > 0)
                     Logger.LogInfo($"           split over {r.SplitSpawns} spawns: Unity creating the object and unsplit game code {r.OtherAvgMs:0.000} ms; {ObjectLoads.PartsText(r, 4)}");
             }
+        }
+
+        /// <summary>log_errors.csv for this session: every distinct error and warning, with its mod and count.</summary>
+        internal void WriteLogErrors()
+        {
+            var w = LogWatch.Instance;
+            if (w == null || Writer == null || w.Errors + w.Warnings == 0) return;
+            Writer.Write(Path.Combine(SessionFolder, "log_errors.csv"), w.Csv(Registry));
         }
 
         private void LogSteps(string title, List<(string label, int calls, double seconds)> steps,
@@ -734,23 +761,70 @@ namespace ValPerfMonitor
         // ---- A/B test ---------------------------------------------------------------------------
 
         /// <summary>Start an A/B test (see AbTest). Returns it; check Error.</summary>
-        internal AbTest StartAb(string mod, string patchesOn, string skip, float seconds, int rounds, string label)
+        internal AbTest StartAb(string mod, string patchesOn, string skip, float seconds, int rounds, string label, int objectId = 0, string objectPath = "", string prefab = "")
         {
-            var t = new AbTest(mod, patchesOn, skip, seconds, rounds, label, Registry, Guid + ".abtest", RootFolder, Logger);
+            var t = new AbTest(mod, patchesOn, skip, objectId, objectPath, prefab, seconds, rounds, label, Registry, Guid + ".abtest", RootFolder, Logger);
             if (t.Error != null) return t;
             if (!WorldReady) { t.Error = "not in a world yet (or the world is still loading)"; return t; }
             AbortAb();
             Suite = null;
             Ab = LastAb = t;
-            Logger.LogInfo($"A/B test started: {t.What}, {t.Plan.Count} turns of {t.Seconds:0} s ({t.PatchCount} patches, {t.SkipCount} skipped methods).");
+            Logger.LogInfo($"A/B test started: {t.What}, {t.Plan.Count} turns of {t.Seconds:0} s ({t.PatchCount} patches, {t.SkipCount} skipped methods, {t.ObjectCount} objects).");
             foreach (var d in t.Describe().Take(15)) Logger.LogInfo("  " + d);
             t.Begin(this);
             if (Current == null) { t.Abort(); Ab = null; t.Error = "could not start a capture"; }
             return t;
         }
 
+        /// <summary>Start the "most expensive objects" recording (see ObjectCosts). Returns it; check Error.</summary>
+        internal ObjectCosts StartObjectCosts(float seconds)
+        {
+            if (!WorldReady) return new ObjectCosts(seconds, Instrumenter, Registry, _guard, Guid + ".objectcosts", Logger) { Error = "not in a world yet (or the world is still loading)" };
+            AbortAb();
+            Suite = null;
+            var oc = new ObjectCosts(seconds, Instrumenter, Registry, _guard, Guid + ".objectcosts", Logger);
+            if (oc.Error != null) return oc;
+            StartCapture(CaptureMode.Baseline, ObjectCosts.CaptureLabel); // the normal probes come off; the object timers go on instead
+            ObjectCosts.Running = ObjectCosts.Last = oc;
+            Logger.LogInfo($"Object costs started: timing each object's per-frame code for {oc.Seconds:0} s.");
+            return oc;
+        }
+
+        private void ObjectCostsFinished(ObjectCosts oc)
+        {
+            ObjectCosts.Running = null;
+            DropObjectCostsCapture();
+            Writer.Write(Path.Combine(SessionFolder, "object_costs.csv"), oc.Csv());
+            Logger.LogInfo($"Object costs: {oc.Objects.Count} objects, {oc.TotalMs:0.00} ms per frame in {oc.MethodsTimed} timed per-frame methods over {oc.Frames} frames. Full list: {Path.Combine(SessionFolder, "object_costs.csv")}");
+            Logger.LogInfo("  Most expensive prefabs (all loaded copies together):");
+            foreach (var p in oc.Prefabs.Take(8))
+                Logger.LogInfo($"  {p.Ms,8:0.000} ms/frame  {p.Prefab} x{p.Objects}{(p.Mods.Count > 0 ? "  [mod code: " + string.Join(", ", p.Mods.ToArray()) + "]" : "")}");
+            Logger.LogInfo("  Most expensive single objects:");
+            foreach (var o in oc.Objects.Take(8))
+                Logger.LogInfo($"  {o.Ms,8:0.000} ms/frame  {o.Prefab} ({(double.IsNaN(o.DistanceM) ? "" : $"{o.DistanceM:0} m away, ")}instanceId {o.InstanceId}): {string.Join(", ", o.Parts.Take(3).Select(x => $"{x.part} {x.ms:0.000}").ToArray())}");
+            var top = oc.Prefabs.FirstOrDefault();
+            ShowToast(top == null ? "Object costs finished: nothing measured." : $"Object costs finished. Most expensive: {top.Prefab} x{top.Objects} ({top.Ms:0.00} ms/frame). Details in the log.", 20f);
+        }
+
+        /// <summary>The Baseline capture under an object costs recording had its timers on: not a clean run, so not saved.</summary>
+        private void DropObjectCostsCapture()
+        {
+            if (Current != null && Current.Mode == CaptureMode.Baseline && Current.Label == ObjectCosts.CaptureLabel)
+            {
+                Current.Finished = true;
+                Current = null;
+            }
+        }
+
         private void AbortAb()
         {
+            if (ObjectCosts.Running != null)
+            {
+                ObjectCosts.Running.Abort();
+                ObjectCosts.Running = null;
+                DropObjectCostsCapture();
+                Logger.LogInfo("Object costs stopped early; timers removed.");
+            }
             if (Ab == null) return;
             Ab.Abort();
             Logger.LogInfo($"A/B test stopped early; everything put back.{(Ab.Phases.Count > 0 ? " So far: " + Ab.Verdict : "")}");
@@ -801,10 +875,13 @@ namespace ValPerfMonitor
         {
             Probe.Recording = false;
             Ab?.PutBack();
+            ObjectCosts.Running?.Abort();
+            SessionCheck.Closed();
             _guard?.AllDone(); // a normal quit while hooking is not a crash
             if (Writer == null)
                 return;
             try { FinishCapture(); } catch (Exception e) { Logger.LogError(e); }
+            try { WriteLogErrors(); } catch (Exception e) { Logger.LogError(e); }
             Writer.Dispose();
             Counters?.Dispose();
         }
