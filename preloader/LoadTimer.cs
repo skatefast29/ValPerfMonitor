@@ -11,7 +11,7 @@ namespace ValPerfMonitor.Preloader
     /// "Chainloader started", one "Loading [Mod x.y]" per mod, and "Chainloader startup complete".
     /// The time between two "Loading" lines is what loading the first mod took (its DLL, its static
     /// setup and its Awake). ValPerfMonitor reads the timestamps once it starts.
-    /// Patches nothing.
+    /// Patches nothing. Also keeps a copy of the previous session's log when that is switched on (<see cref="SessionLogs"/>).
     /// </summary>
     public static class LoadTimer
     {
@@ -24,6 +24,7 @@ namespace ValPerfMonitor.Preloader
 
         public static void Initialize()
         {
+            SessionLogs.SaveLast();
             var events = new List<string>();
             Listener.Record(events, "Preloader patcher started");
             AppDomain.CurrentDomain.SetData(Key, events);

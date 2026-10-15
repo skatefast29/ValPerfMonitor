@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5
+
+- **Past session logs are kept** (new setting "Keep past session logs" under "3 - Logging", on by default): BepInEx empties `LogOutput.log` every time the game starts, so only the last session's log is ever there. Now each launch first saves the previous session's log in `BepInEx/ValPerfMonitor/session_logs`, named by when that session ended, including sessions that ended in a crash. Copies older than "Days to keep past session logs" (14) are deleted. Done by the preloader, before any mod loads; nothing runs while you play. Switch it off to go back to BepInEx's single log.
+
 ## 1.0.4
 
 - Minor README fixes: the companion bridge's current name and link (ValAgentBridge), the hooking and startup split settings, and the full source file list. No changes to how the mod works.

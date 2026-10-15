@@ -14,7 +14,7 @@ The monitor works on its own, and [ValAgentBridge](https://github.com/skatefast2
 ## Installation
 The release zip has two parts, and both are needed:
 - `plugins/ValPerfMonitor.dll`: the monitor. It shows up twice in the BepInEx log: `ValPerfMonitor` and `ValPerfMonitor early start`, a small part that starts before every other mod and only does something when the [startup split](#also-recorded) is on.
-- `patchers/ValPerfMonitor.Preloader.dll`: a tiny helper that starts before any mod loads, so each mod's startup time can be measured. It patches nothing.
+- `patchers/ValPerfMonitor.Preloader.dll`: a tiny helper that starts before any mod loads, so each mod's startup time can be measured (and the previous session's log can be saved before BepInEx empties it). It patches nothing.
 
 **Gale / r2modman:** *Import → local mod* and pick the zip. **Manual:** copy `ValPerfMonitor.dll` to `BepInEx/plugins/ValPerfMonitor/` and `ValPerfMonitor.Preloader.dll` to `BepInEx/patchers/ValPerfMonitor/`.
 
@@ -61,11 +61,13 @@ Hotkeys still work without the panel: **Ctrl+F11** starts a new capture in the s
 - **Coroutines.** Mods' step-by-step background routines are timed like their other code (hook type `Coroutine`).
 - **Network messages.** Every RPC by name, with the mod that handles it, how often and how many KB, plus the connection's total KB/s. In single player nothing crosses a network, but the messages still cost CPU.
 - **Memory leak check.** Once a minute (never during timed tests): game objects, textures, meshes, materials, sounds, scripts per mod, and memory. A leak is a count that keeps rising while the number of loaded objects stays about the same.
+- **Past session logs.** BepInEx empties its log at every launch; the monitor first saves the previous one (crashed sessions too), so earlier sessions can still be read.
 - **Likely cause of every slow frame**: garbage collection, world save, teleport, objects loading, one mod or game system, or engine/rendering.
 
 ## Output: `BepInEx\ValPerfMonitor\`
 - `compare.html`: every capture from every session. Pick runs A and B to see FPS / 1% low changes, which mods were added or removed between them (and a warning when the game version differs), and per-mod changes. **Start here after testing.**
 - `runs.csv`: the same data for Excel.
+- `session_logs\`: a copy of each earlier session's BepInEx log (`LogOutput.log`), named by when that session ended, kept 14 days (`Keep past session logs`).
 - `<session>\load_steps.csv`: the loading steps per startup, world load and logout.
 - `startup_times.csv`, `world_load_times.csv`, `logout_times.csv`: one row per launch / load / logout, across sessions.
 - `<session>\startup_mods.csv`: each mod's loading time. `<session>\startup_methods.csv`: the startup split, when it is on. `<session>\memory.csv`, `memory_by_mod.csv`: the leak check.
@@ -104,6 +106,7 @@ With [ValAgentBridge](https://github.com/skatefast29/ValAgentBridge) installed a
 - `Seconds per mode`: length of each step of the full suite.
 - `Excluded mod GUIDs`: mods to leave unmeasured.
 - `Measure mod coroutines`, `Track network messages`, `Memory check every (seconds)`: switch the extra recordings off.
+- `Keep past session logs` (on by default) and `Days to keep past session logs` (14): on each launch, save the previous session's `LogOutput.log` in `BepInEx/ValPerfMonitor/session_logs`, named by when it ended, so earlier sessions (crashed ones too) can still be read. Copies older than the limit are deleted. Turn it off to keep only BepInEx's usual single log.
 - `Split startup of these mods`, `Split startup of the slowest mods`: the startup split for the next launch (off by default).
 - `Fast hooking budget ms per frame` (40) and `Hooking budget ms per frame` (8): how much time per frame goes into attaching hooks, when they all go on at once (entering a world, tests) and for small top-ups while playing. Higher = done sooner, with a heavier stutter.
 

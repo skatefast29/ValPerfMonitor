@@ -17,7 +17,7 @@ namespace ValPerfMonitor
     {
         public const string Guid = "valheimmods.ValPerfMonitor";
         public const string Name = "ValPerfMonitor";
-        public const string Version = "1.0.4";
+        public const string Version = "1.0.5";
 
         internal static Plugin Instance;
         internal ModRegistry Registry;
@@ -125,6 +125,9 @@ namespace ValPerfMonitor
             CfgOwnerSpikeKb = Config.Bind("3 - Logging", "Owner spike threshold KB", 64f, "Same, for Allocations mode.");
             CfgMemorySeconds = Config.Bind("3 - Logging", "Memory check every (seconds)", 60f, "How often object counts and memory are recorded for leak tracking (memory.csv). Never during timed tests. 0 = off.");
             CfgMaxTraces = Config.Bind("3 - Logging", "Max flame graphs per capture", 40, "Trace mode saves at most this many slow frames.");
+            // Read by the preloader on the next launch (it saves the log before BepInEx empties it); bound here so the switches are in this file.
+            Config.Bind("3 - Logging", "Keep past session logs", true, "On the next launch, save a copy of the previous session's BepInEx log (LogOutput.log) in BepInEx\\ValPerfMonitor\\session_logs, named by when that session ended. Includes sessions that crashed. Off = BepInEx's usual single log. Needs ValPerfMonitor.Preloader.dll.");
+            Config.Bind("3 - Logging", "Days to keep past session logs", 14, new ConfigDescription("Saved session logs older than this are deleted. 0 = keep them all.", new AcceptableValueRange<int>(0, 365)));
 
             CfgSuiteSeconds = Config.Bind("4 - Suite", "Seconds per mode", 60f, "Measured time per mode in the full suite (warm-up not included).");
             CfgSuiteAlloc = Config.Bind("4 - Suite", "Include Allocations", true, "");
