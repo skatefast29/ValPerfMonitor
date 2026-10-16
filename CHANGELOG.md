@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
 
 - **Memory census** (new in the F11 Run tab, and `perf/memory_census` / `perf/memory_census_result`): counts every object kept in memory (reachable from static fields and from all components and ScriptableObjects) and groups them by mod, by root (one static field, or all components of one type) and by object type, with approximate MB. Then it times a full garbage collection, whose length grows with the number of live objects. Results go to the log in plain English and to `memory_census_<time>.txt`, which has column headers and a summary on top. Static fields are read straight from memory, so no mod's setup code is ever run early (a self-test checks this on every run). The work is spread over a few seconds of frames, which are left out of captures; a running recording is ended (and saved) first. The monitor's own memory is shown on a separate line.
   - **What grew** (leak finder): each census is compared with the previous one this session, by owner and by root, so a mod whose objects keep growing while you stand in one place stands out.
