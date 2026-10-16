@@ -54,6 +54,7 @@ namespace ValPerfMonitor
             if (Instance != null) return;
             Instance = new LogWatch();
             Logger.Listeners.Add(Instance);
+            TimeLogWrites();
         }
 
         public int Errors { get { lock (_lock) return _errors; } }
@@ -62,12 +63,14 @@ namespace ValPerfMonitor
         public void LogEvent(object sender, LogEventArgs e)
         {
             bool error = (e.Level & (LogLevel.Error | LogLevel.Fatal)) != 0;
-            if (!error && (e.Level & LogLevel.Warning) == 0) return;
+            bool warning = (e.Level & LogLevel.Warning) != 0;
             try
             {
                 string source = e.Source?.SourceName ?? "?";
                 string text = e.Data as string ?? e.Data?.ToString() ?? "";
                 int nl = text.IndexOf('\n');
+                CountFlood(source, text, nl, error ? "error" : warning ? "warning" : "info");
+                if (!error && !warning) return;
                 string first = (nl < 0 ? text : text.Substring(0, nl)).Trim();
                 if (first.Length > 240) first = first.Substring(0, 240);
                 string level = error ? "error" : "warning";
@@ -95,6 +98,128 @@ namespace ValPerfMonitor
         }
 
         public void Dispose() { }
+
+        // ---- Log floods: one message repeated many times a second -------------------------------
+
+        public sealed class Flood
+        {
+            public string Source, Level, Message;
+            public int PeakPerSecond, FloodSeconds;
+            public long Total;             // all lines of this message while it flooded or since
+            public double FirstFlood, LastFlood, LastWarned = double.NegativeInfinity;
+        }
+
+        /// <summary>Lines of one message per second that count as a flood (setting "Log flood: lines per second").</summary>
+        public static int FloodThreshold = 20;
+        private long _second = -1;
+        private readonly Dictionary<string, int> _thisSecond = new Dictionary<string, int>();
+        private readonly Dictionary<string, Flood> _floods = new Dictionary<string, Flood>();
+        private readonly Queue<Flood> _newFloods = new Queue<Flood>();
+        private long _lines;
+
+        /// <summary>All log lines (any level) since the start.</summary>
+        public long Lines { get { lock (_lock) return _lines; } }
+
+        // Any thread. Counts lines per message within the current second; a message passing the threshold is queued
+        // for the main thread to warn about (Plugin.Tick -> Alarms). This monitor's own lines are left out.
+        private void CountFlood(string source, string text, int nl, string level)
+        {
+            lock (_lock)
+            {
+                _lines++;
+                if (source.StartsWith(Plugin.Name, StringComparison.Ordinal)) return;
+                long sec = (long)Now;
+                if (sec != _second) { _second = sec; _thisSecond.Clear(); }
+                int len = Math.Min(nl < 0 ? text.Length : nl, 160);
+                string key = source + "|" + level + "|" + text.Substring(0, len);
+                _thisSecond.TryGetValue(key, out int n);
+                _thisSecond[key] = ++n;
+                if (_floods.TryGetValue(key, out var f))
+                {
+                    f.Total++;
+                    if (n > f.PeakPerSecond) f.PeakPerSecond = n;
+                    if (n == FloodThreshold + 1) { f.FloodSeconds++; f.LastFlood = Now; _newFloods.Enqueue(f); }
+                }
+                else if (n > FloodThreshold && _floods.Count < 200)
+                {
+                    f = new Flood { Source = source, Level = level, Message = text.Substring(0, len).Trim(), PeakPerSecond = n, FloodSeconds = 1, Total = n, FirstFlood = Now, LastFlood = Now };
+                    _floods[key] = f;
+                    _newFloods.Enqueue(f);
+                }
+            }
+        }
+
+        /// <summary>Floods that started (or came back) since the last call. Main thread.</summary>
+        public List<Flood> TakeNewFloods()
+        {
+            lock (_lock)
+            {
+                var l = new List<Flood>();
+                while (_newFloods.Count > 0) { var f = _newFloods.Dequeue(); if (!l.Contains(f)) l.Add(f); }
+                return l;
+            }
+        }
+
+        public List<Flood> Floods() { lock (_lock) return _floods.Values.OrderByDescending(f => f.Total).ToList(); }
+
+        /// <summary>The mod a flood belongs to: a mod's own log name, else its log name.</summary>
+        public static string FloodOwner(Flood f, ModRegistry registry)
+        {
+            var named = registry.Visible.FirstOrDefault(m => m.IsPlugin && m.Name == f.Source);
+            if (named != null) return named.Name;
+            // Game and Unity lines: the error list may know the mod from the stack trace.
+            if (Instance != null)
+            {
+                Entry e;
+                lock (Instance._lock) e = Instance._messages.Values.FirstOrDefault(x => x.Source == f.Source && x.Message.StartsWith(f.Message, StringComparison.Ordinal));
+                if (e != null) return Instance.Owner(e, registry);
+            }
+            return f.Source == "Unity Log" ? "Valheim / Unity" : f.Source;
+        }
+
+        // ---- Main-thread time spent writing log lines --------------------------------------------
+
+        private static int _mainThread = -1, _depth;
+        private static long _startTicks;
+        /// <summary>Main-thread Stopwatch ticks spent handing log lines to BepInEx's listeners (disk, console, ...).</summary>
+        public static long MainThreadTicks;
+        public static long MainThreadLines;
+        public static bool Timed;
+
+        /// <summary>
+        /// Times BepInEx's hand-out of each log line to its listeners (writing LogOutput.log, the console, this
+        /// monitor) on the main thread. Unity's own cost of building an error (its stack trace) comes before that
+        /// and is not included, so this is a lower bound. Logger.InternalLogEvent is too small to patch (Mono inlines
+        /// it); the listener collection's SendLogEvent is patched instead.
+        /// </summary>
+        private static void TimeLogWrites()
+        {
+            if (Timed) return;
+            try
+            {
+                _mainThread = System.Threading.Thread.CurrentThread.ManagedThreadId;
+                var t = AccessTools.Inner(typeof(Logger), "LogListenerCollection");
+                var m = t == null ? null : AccessTools.Method(t, "SendLogEvent", new[] { typeof(object), typeof(LogEventArgs) });
+                if (m == null) { Logger.CreateLogSource(Plugin.Name).LogInfo("BepInEx's log code is not as expected: time spent writing log lines is not measured."); return; }
+                new Harmony(Plugin.Guid + ".logtime").Patch(m, prefix: new HarmonyMethod(typeof(LogWatch), nameof(SendPrefix)), finalizer: new HarmonyMethod(typeof(LogWatch), nameof(SendFinalizer)));
+                Timed = true;
+            }
+            catch (Exception e) { Logger.CreateLogSource(Plugin.Name).LogInfo($"Time spent writing log lines is not measured: {e.Message}"); }
+        }
+
+        private static void SendPrefix()
+        {
+            if (System.Threading.Thread.CurrentThread.ManagedThreadId != _mainThread) return;
+            if (_depth++ == 0) _startTicks = Stopwatch.GetTimestamp();
+        }
+
+        private static void SendFinalizer()
+        {
+            if (System.Threading.Thread.CurrentThread.ManagedThreadId != _mainThread || _depth == 0) return;
+            if (--_depth == 0) { MainThreadTicks += Stopwatch.GetTimestamp() - _startTicks; MainThreadLines++; }
+        }
+
+        public static double TicksToMs(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 
         // The first few lines that look like stack frames.
         private static string StackOf(string rest)

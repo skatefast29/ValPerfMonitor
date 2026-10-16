@@ -49,6 +49,20 @@ namespace ValPerfMonitor
         private readonly string _modeName;
         private double _lastIntervalAt = -1;
         private int _spikeRows;
+        private int _eventsFrom;
+        private long _logTicks, _logLines;
+        /// <summary>LogWatch counters when the capture started (log lines and main-thread time writing them).</summary>
+        public long LogTicksAtStart, LogLinesAtStart;
+        /// <summary>Frames left out because ValAgentBridge ran a command in them: per command, count and slowest frame.</summary>
+        public readonly Dictionary<string, (int frames, float worstMs)> BridgeLeftOut = new Dictionary<string, (int, float)>();
+
+        public void LeftOutForBridge(string name, float ms)
+        {
+            if (string.IsNullOrEmpty(name)) name = "?";
+            BridgeLeftOut.TryGetValue(name, out var v);
+            BridgeLeftOut[name] = (v.frames + 1, Math.Max(v.worstMs, ms));
+        }
+
         private const int MaxSpikeRows = 20000;
 
         public Capture(int number, CaptureMode mode, string label, string sessionFolder, ModRegistry registry,
@@ -78,7 +92,11 @@ namespace ValPerfMonitor
             writer.Write(Path.Combine(Folder, "frames.csv"),
                 "time,session_s,frames_counted,frames_excluded,fps,frame_ms_avg,frame_ms_p50,frame_ms_p95,frame_ms_p99,frame_ms_max,raw_frame_ms_avg," +
                 $"monitor_ms_per_frame,probe_overhead_ms_per_frame,mods_{u}_per_frame,game_{u}_per_frame,probe_calls_per_frame,gc_frames,heap_mb," +
-                string.Join(",", counters.Counters.Select(c => c.Column)) + ",cpu_main_ms,cpu_render_ms,gpu_ms,present_wait_ms," + GameContext.CsvHeader + "\n");
+                string.Join(",", counters.Counters.Select(c => c.Column)) + ",cpu_main_ms,cpu_render_ms,gpu_ms,present_wait_ms," + GameContext.CsvHeader +
+                ",log_lines,log_write_ms,events\n");
+            _eventsFrom = Events.Count;
+            _logTicks = LogTicksAtStart = LogWatch.MainThreadTicks;
+            _logLines = LogLinesAtStart = LogWatch.Instance?.Lines ?? 0;
             if (mode != CaptureMode.Baseline)
             {
                 writer.Write(Path.Combine(Folder, "timeline.csv"),
@@ -141,7 +159,11 @@ namespace ValPerfMonitor
             foreach (var c in _counters.Counters) sb.Append(UnityCounters.Avg(c, true)).Append(',');
             sb.Append(_counters.Timing(true, 0)).Append(',').Append(_counters.Timing(true, 1)).Append(',')
               .Append(_counters.Timing(true, 2)).Append(',').Append(_counters.Timing(true, 3)).Append(',')
-              .Append(ctx.ToCsv()).Append('\n');
+              .Append(ctx.ToCsv()).Append(',');
+            long lines = LogWatch.Instance?.Lines ?? 0, ticks = LogWatch.MainThreadTicks;
+            sb.Append(lines - _logLines).Append(',').Append(LogWatch.Timed ? Csv.F(LogWatch.TicksToMs(ticks - _logTicks), "0.0") : "").Append(',')
+              .Append(Csv.Q(Events.Since(ref _eventsFrom))).Append('\n');
+            _logLines = lines; _logTicks = ticks;
             _writer.Append(Path.Combine(Folder, "frames.csv"), sb.ToString());
 
             if (Mode != CaptureMode.Baseline)

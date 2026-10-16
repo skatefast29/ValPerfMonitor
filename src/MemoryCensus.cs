@@ -78,6 +78,8 @@ namespace ValPerfMonitor
         public List<(string type, long bytes, long count)> ByType = new List<(string, long, long)>();
         public List<(string what, long bytes)> Big = new List<(string, long)>();
         public Row Self;
+        /// <summary>Game objects by scene and root, materials by name (Unity's side of memory).</summary>
+        public UnityCensus Unity;
 
         private readonly ModRegistry _registry;
         private readonly Assembly _selfAsm = typeof(MemoryCensus).Assembly;
@@ -284,6 +286,10 @@ namespace ValPerfMonitor
             yield return null;
             Summarize();
             Release();
+
+            // ---- Unity's own objects: game objects by scene and root, materials by name ----
+            Unity = new UnityCensus();
+            foreach (var st in Unity.Run(() => OutOfTime)) { Status = "Unity objects: " + st; yield return null; }
 
             // ---- Full collections: one untimed (clears the census's own garbage), then timed ones, one per frame ----
             Status = "clearing the census's own memory";
@@ -771,6 +777,7 @@ namespace ValPerfMonitor
                 if (grew.Length > 0) l.Add("Grew most: " + string.Join("; ", grew) + ". Something that grows in every census while you stay in one place is likely a leak; one-off changes are usually objects loading as you move.");
                 else l.Add("Nothing grew since then.");
             }
+            if (Unity != null) l.AddRange(Unity.Plain());
             if (Self != null) l.Add($"This monitor itself keeps {Millions(Self.Count)} objects ({Mb(Self.Bytes)} MB), left out above.");
             if (!StaticsRead) l.Add("Static fields were NOT read (" + StaticsNote + "); only components were counted.");
             return l;
@@ -818,6 +825,8 @@ namespace ValPerfMonitor
                 Line(Header);
                 foreach (var g in RootGrowth) { var (o, r) = SplitKey(g.name); Line(GrowRow(g.count, g.bytes, $"[{o}] {r}")); }
             }
+
+            Unity?.Text(sb);
 
             Line();
             Line("== By owner (objects first reached from its static fields and components) ==");

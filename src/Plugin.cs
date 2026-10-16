@@ -7,6 +7,7 @@ using System.Linq;
 using System.Threading;
 using BepInEx;
 using BepInEx.Configuration;
+using BepInEx.Logging;
 using HarmonyLib;
 using UnityEngine;
 
@@ -17,7 +18,7 @@ namespace ValPerfMonitor
     {
         public const string Guid = "valheimmods.ValPerfMonitor";
         public const string Name = "ValPerfMonitor";
-        public const string Version = "1.2.0";
+        public const string Version = "1.3.0";
 
         internal static Plugin Instance;
         internal ModRegistry Registry;
@@ -37,6 +38,8 @@ namespace ValPerfMonitor
         private InputBlock _input;
         private SafetyGuard _guard;
         internal readonly List<CaptureResult> Results = new List<CaptureResult>();
+        internal Alarms Alarms;
+        private bool _bridgeWatched;
         internal string Toast = "";
         internal float ToastUntil;
 
@@ -51,7 +54,8 @@ namespace ValPerfMonitor
         internal ConfigEntry<KeyboardShortcut> CfgToggleKey, CfgRestartKey, CfgSuiteKey, CfgOverlayKey;
         internal ConfigEntry<float> CfgInterval, CfgSummaryInterval, CfgFrameSpikeMs, CfgOwnerSpikeMs, CfgOwnerSpikeKb, CfgPatchBudgetMs, CfgTestPatchBudgetMs,
                                     CfgWarmup, CfgSwitchWarmup, CfgWorldSettle, CfgMonitorExcludeMs, CfgSuiteSeconds, CfgBenchmarkSeconds, CfgScale;
-        internal ConfigEntry<float> CfgMemorySeconds;
+        internal ConfigEntry<float> CfgMemorySeconds, CfgLeakSeconds;
+        internal ConfigEntry<int> CfgFloodLines;
         internal ConfigEntry<int> CfgWindowFrames, CfgRows, CfgFontSize, CfgPosX, CfgPosY, CfgMaxTraces;
 
         // Frame bookkeeping.
@@ -69,6 +73,9 @@ namespace ValPerfMonitor
         private int _lastObjects = -1;
         private float _nextMemory;
         private bool _limiterLogged;
+
+        /// <summary>This plugin's log (BaseUnityPlugin.Logger is protected).</summary>
+        internal ManualLogSource Log => Logger;
 
         internal bool WarmingUp => Time.realtimeSinceStartup < _warmupUntil || (Instrumenter != null && Instrumenter.Pending > 0);
 
@@ -124,6 +131,10 @@ namespace ValPerfMonitor
             CfgOwnerSpikeMs = Config.Bind("3 - Logging", "Owner spike threshold ms", 2f, "A mod or game system over this in one frame counts as a spike for it (Timing/Trace).");
             CfgOwnerSpikeKb = Config.Bind("3 - Logging", "Owner spike threshold KB", 64f, "Same, for Allocations mode.");
             CfgMemorySeconds = Config.Bind("3 - Logging", "Memory check every (seconds)", 60f, "How often object counts and memory are recorded for leak tracking (memory.csv). Never during timed tests. 0 = off.");
+            CfgLeakSeconds = Config.Bind("3 - Logging", "Leak check every (seconds) when not recording", 300f, "While nothing is recording, object counts and memory are still checked this often in a world (a short stutter each time), so a leak during normal play is noticed: a warning appears when game objects or materials keep growing while the world around you does not. 0 = only while recording.");
+            CfgFloodLines = Config.Bind("3 - Logging", "Log flood: lines per second", 20, new ConfigDescription("Warn (log and on screen) when one message is written more often than this in one second. A mod repeating an error every frame costs frame time and fills the log.", new AcceptableValueRange<int>(5, 1000)));
+            LogWatch.FloodThreshold = CfgFloodLines.Value;
+            CfgFloodLines.SettingChanged += (_, __) => LogWatch.FloodThreshold = CfgFloodLines.Value;
             CfgMaxTraces = Config.Bind("3 - Logging", "Max flame graphs per capture", 40, "Trace mode saves at most this many slow frames.");
             // Read by the preloader on the next launch (it saves the log before BepInEx empties it); bound here so the switches are in this file.
             Config.Bind("3 - Logging", "Keep past session logs", true, "On the next launch, save a copy of the previous session's BepInEx log (LogOutput.log) in BepInEx\\ValPerfMonitor\\session_logs, named by when that session ended. Includes sessions that crashed. Off = BepInEx's usual single log. Needs ValPerfMonitor.Preloader.dll.");
@@ -184,6 +195,7 @@ namespace ValPerfMonitor
             CpuClock.Init(Logger);
             Net = new NetworkStats(Registry, Logger);
             Memory = new MemoryTracker(Registry);
+            Alarms = new Alarms(this);
             Instrumenter.Calibrate();
             double probeBytes = Instrumenter.ChildOverhead[(int)CaptureMode.Allocations];
             if (AllocCounter.Exact && probeBytes > 8)
@@ -231,6 +243,9 @@ namespace ValPerfMonitor
                 float rawMs = frameStart != 0 ? (float)((t0 - frameStart) * msPerTick) : 0f;
                 float monitorMs = (float)(_monitorTicks * msPerTick);
                 bool monitorBusy = _heavy || WarmingUp || monitorMs > CfgMonitorExcludeMs.Value;
+                // Frames in which ValAgentBridge ran a command are test tooling, not play: left out, like the monitor's own work.
+                bool bridge = Events.TakeBridgeFrame(out string bridgeName);
+                if (bridge && Current != null && Probe.Recording && frameStart != 0) Current.LeftOutForBridge(bridgeName, rawMs);
                 int objects = GameContext.LoadedObjects();
                 int objectsChanged = objects >= 0 && _lastObjects >= 0 ? Math.Abs(objects - _lastObjects) : 0;
                 _lastObjects = objects;
@@ -238,7 +253,7 @@ namespace ValPerfMonitor
                 {
                     // A GC while this monitor was writing or doing heavy work may have been caused by it: don't count it.
                     // Frames while the test panel is open are never counted (nobody is playing, and the UI is heavy).
-                    bool counted = !WarmingUp && !_heavy && !_overlay.PanelOpen && monitorMs <= CfgMonitorExcludeMs.Value && !(gc && (_heavy || Writer.Busy));
+                    bool counted = !WarmingUp && !_heavy && !bridge && !_overlay.PanelOpen && monitorMs <= CfgMonitorExcludeMs.Value && !(gc && (_heavy || Writer.Busy));
                     var sample = new FrameSample
                     {
                         RawMs = rawMs, MonitorMs = monitorMs, Counted = counted, Gc = gc,
@@ -349,8 +364,10 @@ namespace ValPerfMonitor
                 _heavy = true;
 
             float now = Time.realtimeSinceStartup;
+            Alarms.Tick();
             if (now >= _nextRescanCheck)
             {
+                if (!_bridgeWatched) _bridgeWatched = Events.WatchBridge(new Harmony(Guid + ".events"), Logger);
                 // Some mods patch late (on world load, on first use). Pick those up too.
                 _nextRescanCheck = now + 15f;
                 if (Instrumenter.Hooked && Instrumenter.Pending == 0 && Instrumenter.PatchSetChanged())
@@ -366,8 +383,11 @@ namespace ValPerfMonitor
             // list. Not during timed tests (new hooks would restart the warm-up, and the walk is a hitch), and not
             // while idle: nobody reads the result then, and the walk is a stutter the player feels.
             bool scanDue = now >= _nextLiveScan && Instrumenter.Pending == 0 && Instrumenter.Hooked;
-            bool memoryDue = CfgMemorySeconds.Value > 0 && now >= _nextMemory;
-            if ((scanDue || memoryDue) && Current != null && TestRunning == null)
+            // While idle, the memory check still runs every few minutes in a world (setting "Leak check every"), for the leak alarm.
+            bool recording = Current != null;
+            bool memoryDue = now >= _nextMemory && (recording ? CfgMemorySeconds.Value > 0
+                                                              : CfgLeakSeconds.Value > 0 && inWorld && !Loads.WorldLoading);
+            if (((scanDue && recording) || memoryDue) && TestRunning == null)
             {
                 _heavy = true;
                 UnityEngine.Object[] behaviours = null;
@@ -381,9 +401,11 @@ namespace ValPerfMonitor
                 }
                 if (memoryDue)
                 {
-                    _nextMemory = now + Mathf.Max(10f, CfgMemorySeconds.Value);
+                    _nextMemory = now + Mathf.Max(10f, recording ? CfgMemorySeconds.Value : CfgLeakSeconds.Value);
                     Context.Sample(full: false);
-                    Memory.Write(Writer, SessionFolder, Memory.Take(behaviours, SessionSeconds, Context, Counters));
+                    var sample = Memory.Take(behaviours, SessionSeconds, Context, Counters);
+                    Memory.Write(Writer, SessionFolder, sample);
+                    Alarms.CheckLeak(sample, Memory.Samples);
                 }
             }
 
@@ -668,6 +690,12 @@ namespace ValPerfMonitor
             if (log.errors > 0)
                 Logger.LogInfo($"  Errors in the log during this capture: {log.errors} ({log.perMin:0.0} per minute), most from {log.top}. Details: perf/log_errors or {Path.Combine(SessionFolder, "log_errors.csv")}");
             WriteLogErrors();
+            long logLines = (LogWatch.Instance?.Lines ?? 0) - c.LogLinesAtStart;
+            double minutesC = Math.Max(1.0 / 60, (DateTime.Now - c.Started).TotalMinutes);
+            if (LogWatch.Timed && logLines > 0)
+                Logger.LogInfo($"  Log: {logLines / minutesC:0} lines per minute; writing them took {LogWatch.TicksToMs(LogWatch.MainThreadTicks - c.LogTicksAtStart) / minutesC:0.0} ms of main-thread time per minute (Unity's own cost for building errors comes on top).");
+            if (c.BridgeLeftOut.Count > 0)
+                Logger.LogInfo($"  Frames left out because ValAgentBridge ran a command in them: {string.Join(", ", c.BridgeLeftOut.OrderByDescending(k => k.Value.worstMs).Take(6).Select(k => $"{k.Key} {k.Value.frames}x (slowest {k.Value.worstMs:0} ms)"))}");
             if (c.Stats.SpikeCount > 0)
                 Logger.LogInfo($"  Slow frames: {c.Stats.SpikeCount} ({string.Join(", ", c.Stats.CauseCounts.OrderByDescending(k => k.Value).Select(k => $"{k.Value} {k.Key}"))})");
             var net = c.Net.Top(3).ToList();

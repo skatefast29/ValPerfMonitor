@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0
+
+- **Log flood warning**: when one message is written more than 20 times in one second (setting "Log flood: lines per second"), a warning appears on screen and in the log, naming the mod and the message. Before, a mod repeating an error every frame (for example 55,000 "Failed to allocate NavMeshLink" errors in one session) was only noticed afterwards in an 11 MB log. Floods are listed in `perf/log_errors`.
+- **Time spent writing the log**: the main-thread time BepInEx spends writing log lines is measured: per 10 s in `frames.csv` (`log_lines`, `log_write_ms`), per capture in the log, and per minute in `perf/log_errors`. Unity's own cost of building an error comes on top, so this is a lower bound.
+- **Leak warning, also during normal play**: game objects and materials are compared with an earlier moment that had about as many loaded world objects; when they grew a lot while the world around you did not, a warning appears ("Possible leak"). The memory check now also runs every 5 minutes while nothing is recording (setting "Leak check every (seconds) when not recording"; 0 = only while recording), with a short stutter each time.
+- **Memory census lists Unity's own objects**: game objects by scene and by root object, and materials by name (with how many are runtime copies), compared with the previous census. That shows *which* objects or materials pile up.
+- **Pathfinding links**: every 10 s in a world, the navigation tiles, the links between them and the links waiting to be removed go to `pathfinding.csv`. A warning appears at 75% of Unity's limit of about 65,535 links; at the limit the game logs "Failed to allocate NavMeshLink" every frame.
+- **Events**: teleports and portals, entering and leaving a world, season changes (Seasonality) and ValAgentBridge commands are kept in `events.csv`, listed per 10 s in `frames.csv`, and named on slow frames up to 3 s after them ("after season change to Winter (0.4 s)").
+- **Test tooling left out**: frames in which ValAgentBridge ran a command are left out of captures, like the monitor's own work. Each capture's log summary lists them per command with the slowest frame.
+- `perf/alarms` (new): pathfinding counts, the latest memory sample, log floods and recent events.
+
 ## 1.2.0
 
 - **Memory census** (new in the F11 Run tab, and `perf/memory_census` / `perf/memory_census_result`): counts every object kept in memory (reachable from static fields and from all components and ScriptableObjects) and groups them by mod, by root (one static field, or all components of one type) and by object type, with approximate MB. Then it times a full garbage collection, whose length grows with the number of live objects. Results go to the log in plain English and to `memory_census_<time>.txt`, which has column headers and a summary on top. Static fields are read straight from memory, so no mod's setup code is ever run early (a self-test checks this on every run). The work is spread over a few seconds of frames, which are left out of captures; a running recording is ended (and saved) first. The monitor's own memory is shown on a separate line.

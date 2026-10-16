@@ -334,7 +334,43 @@ namespace ValPerfMonitor
                     stack = x.entry.Stack.Length == 0 ? null : x.entry.Stack.Split('\n').Take(5).ToList(),
                 }).ToList(),
                 distinctMessagesNotKept = w.Dropped,
+                logLines = w.Lines,
+                logWriteMsPerMinute = LogWatch.Timed ? Math.Round(LogWatch.TicksToMs(LogWatch.MainThreadTicks) / minutes, 1) : (double?)null,
+                floods = w.Floods().Take(Math.Max(1, count)).Select(f => new
+                {
+                    mod = LogWatch.FloodOwner(f, p.Registry), logName = f.Source, level = f.Level, message = f.Message,
+                    peakPerSecond = f.PeakPerSecond, secondsFlooding = f.FloodSeconds, lines = f.Total,
+                    firstSecondsAgo = Math.Round(LogWatch.Now - f.FirstFlood, 0), lastSecondsAgo = Math.Round(LogWatch.Now - f.LastFlood, 0),
+                }).ToList(),
+                floodNote = $"A flood = one message written more than {LogWatch.FloodThreshold} times in one second. logWriteMsPerMinute = main-thread time BepInEx spent writing log lines (Unity's own cost of building errors comes on top).",
                 file = System.IO.Path.Combine(p.SessionFolder, "log_errors.csv"),
+            };
+        }
+
+        [BridgeTool("perf/alarms", "Live watch state: pathfinding tiles and links against Unity's limit, the latest memory sample (game objects, materials, loaded objects), log floods, and recent events (teleports, logins, season changes, ValAgentBridge commands) that slow frames are labelled with")]
+        private static object AlarmsTool(int events = 30)
+        {
+            var p = P;
+            if (p == null || p.Alarms == null) return new { success = false, error = "monitor not started" };
+            var a = p.Alarms;
+            var m = p.Memory.Samples.LastOrDefault();
+            return new
+            {
+                success = true,
+                pathfinding = a.Tiles < 0 ? null : new
+                {
+                    tiles = a.Tiles, links = a.Links, linksWaitingRemoval = a.LinksQueued, tilesWaitingRemoval = a.TilesQueued,
+                    pctOfLimit = Math.Round(100.0 * (a.Links + a.LinksQueued) / Alarms.LinkLimit, 1), limit = Alarms.LinkLimit,
+                },
+                memory = m == null ? null : new
+                {
+                    secondsAgo = Math.Round(p.SessionSeconds - m.SessionSeconds, 0), m.InWorld, objectsLoaded = m.Instances, gameObjects = m.GameObjects,
+                    materials = m.Materials, textures = m.Textures, meshes = m.Meshes, monoUsedMb = Round(m.MonoUsedMb),
+                },
+                logWriteMsLastSecond = Math.Round(a.LastSecondLogMs, 1),
+                floods = LogWatch.Instance?.Floods().Take(10).Select(f => new { mod = LogWatch.FloodOwner(f, p.Registry), f.Message, f.PeakPerSecond, lines = f.Total }).ToList(),
+                events = Events.Last(Math.Max(1, events)).Select(e => new { e.Kind, e.Detail, secondsAgo = Math.Round(UnityEngine.Time.realtimeSinceStartup - e.At, 1) }).ToList(),
+                files = new[] { "events.csv", "pathfinding.csv", "memory.csv" }.Select(f => System.IO.Path.Combine(p.SessionFolder, f)).ToList(),
             };
         }
 
@@ -442,6 +478,21 @@ namespace ValPerfMonitor
                     byOwner = mc.OwnerGrowth.Take(n).Select(g => new { owner = g.name, objectsAdded = g.count, mbAdded = MemoryCensus.MbNum(g.bytes) }).ToList(),
                     byRoot = mc.RootGrowth.Take(n).Select(g => { var (o, r) = MemoryCensus.SplitKey(g.name); return new { owner = o, root = r, objectsAdded = g.count, mbAdded = MemoryCensus.MbNum(g.bytes) }; }).ToList(),
                     note = "Only what grew. A root never shows more than its owner grew (objects can move between roots of one owner between censuses). Growth in every census while standing in one place suggests a leak; one-off growth is usually objects loading as the player moves.",
+                },
+                unity = mc.Unity == null ? null : new
+                {
+                    gameObjects = mc.Unity.GameObjects, switchedOff = mc.Unity.Inactive, hidden = mc.Unity.Hidden,
+                    materials = mc.Unity.Materials, materialCopies = mc.Unity.MaterialCopies,
+                    byScene = mc.Unity.ByScene.Take(n).Select(x => new { scene = x.name, gameObjects = x.count }).ToList(),
+                    byRoot = mc.Unity.ByRoot.Take(n).Select(x => new { root = x.name, gameObjects = x.count }).ToList(),
+                    byMaterial = mc.Unity.ByMaterial.Take(n).Select(x => new { material = x.name, count = x.count }).ToList(),
+                    growth = !mc.Unity.HasPrevious ? null : new
+                    {
+                        byScene = mc.Unity.SceneGrowth.Take(n).Select(x => new { scene = x.name, added = x.count }).ToList(),
+                        byRoot = mc.Unity.RootGrowth.Take(n).Select(x => new { root = x.name, added = x.count }).ToList(),
+                        byMaterial = mc.Unity.MaterialGrowth.Take(n).Select(x => new { material = x.name, added = x.count }).ToList(),
+                    },
+                    note = "Unity's own objects (not in the managed counts above). Copies are grouped with their original ((Clone)/(Instance) left out). Growth while the world stays the same is a leak.",
                 },
                 bigObjects = mc.Big.Take(n).Select(b => new { totalMb = MemoryCensus.MbNum(b.bytes), what = b.what }).ToList(), // objects of 4 MB or more; "N x" = N of one type under one root
                 census = new
