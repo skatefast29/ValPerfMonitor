@@ -471,6 +471,7 @@ namespace ValPerfMonitor
             _turn = new Phase();
             _sampleCountdown = 0;
             p.StartCapture(CaptureMode.Baseline, $"{Label} {(on ? "normal" : "off")} {step + 1}");
+            if (p.Current != null) p.Current.AbTurn = true;
         }
 
         private void RecordPhase(Plugin p, Capture c)

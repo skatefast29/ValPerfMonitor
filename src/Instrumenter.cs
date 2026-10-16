@@ -554,6 +554,35 @@ namespace ValPerfMonitor
                 _pending.Enqueue(s);
         }
 
+        /// <summary>
+        /// Take the probe off these methods for a moment, for a measurement the probe would add to (perf/worldgen_cost).
+        /// Returns the methods taken off; PutProbesBack puts them on again. Methods without a probe are left alone.
+        /// </summary>
+        public List<MethodBase> TakeProbesOff(IEnumerable<MethodBase> methods)
+        {
+            var off = new List<MethodBase>();
+            foreach (var m in methods.Distinct())
+            {
+                if (m == null || !_known.TryGetValue(m, out var s) || s == null || !s.Attached) continue;
+                try { _harmony.Unpatch(m, HarmonyPatchType.All, _harmony.Id); off.Add(m); }
+                catch (Exception e) { _log.LogWarning($"Could not take the probe off {Describe(m)} for a moment: {e.Message}"); }
+            }
+            return off;
+        }
+
+        public void PutProbesBack(List<MethodBase> off)
+        {
+            foreach (var m in off)
+            {
+                try { PatchProbe(m); }
+                catch (Exception e)
+                {
+                    _log.LogWarning($"Could not put the probe back on {Describe(m)}: {e.Message}");
+                    if (_known.TryGetValue(m, out var s) && s != null && s.Attached) { s.Attached = false; s.Mod.Instrumented--; }
+                }
+            }
+        }
+
         /// <summary>True while every probe is being attached at once (entering a world, after Baseline), as opposed to small top-ups.</summary>
         public bool FullRound { get; private set; }
 

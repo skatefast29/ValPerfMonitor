@@ -18,7 +18,7 @@ namespace ValPerfMonitor
         private enum SortBy { Avg, Peak, Calls, Capture }
         private enum Filter { Mods, Game, All }
         private enum Tab { Run, Live, Results, LoadMemory }
-        private enum RunKind { Suite, Single, Continuous, Objects }
+        private enum RunKind { Suite, Single, Continuous, Objects, Memory }
 
         private static readonly Dictionary<CaptureMode, string> ModeHelp = new Dictionary<CaptureMode, string>
         {
@@ -118,10 +118,12 @@ namespace ValPerfMonitor
         private string StatusText()
         {
             var p = _plugin;
+            var mc = MemoryCensus.Running;
+            if (mc != null)
+                return $"<color=#ffcc55>● Memory census</color>   {mc.Status}";
             if (p.Current == null)
                 return "<color=#aaaaaa>■ Idle</color> – not recording. Start a test in the Run tab.";
-            string state = !Probe.Recording ? "<color=#aaaaaa>❚❚ Paused</color>"
-                : p.Instrumenter.Pending > 0 ? $"<color=#ffcc55>● Hooking {p.Instrumenter.Pending} methods…</color>"
+            string state = p.Instrumenter.Pending > 0 ? $"<color=#ffcc55>● Hooking {p.Instrumenter.Pending} methods…</color>"
                 : p.WarmingUp ? $"<color=#ffcc55>● Warming up {p.WarmupLeft:0}s</color> (not counted yet)"
                 : "<color=#ff5555>● Recording</color>";
             string what = p.Suite != null ? p.Suite.Status(p) : ObjectCosts.Running != null ? ObjectCosts.Running.Status : p.Ab != null ? $"{p.Ab.Status} · {p.Current.MeasuredSeconds:0}/{p.Ab.Seconds:0}s"
@@ -234,7 +236,8 @@ namespace ValPerfMonitor
             GUILayout.BeginHorizontal();
             GUILayout.Label(_status, _label);
             GUILayout.FlexibleSpace();
-            if (Cap != null && GUILayout.Button(_plugin.Suite != null || _plugin.Ab != null || ObjectCosts.Running != null ? "■ Stop test" : "■ Stop & save", GUILayout.Width(120)))
+            bool testRunning = _plugin.Suite != null || _plugin.Ab != null || ObjectCosts.Running != null || MemoryCensus.Running != null;
+            if ((Cap != null || MemoryCensus.Running != null) && GUILayout.Button(testRunning ? "■ Stop test" : "■ Stop & save", GUILayout.Width(120)))
                 _plugin.StopTest();
             GUILayout.EndHorizontal();
             if (Time.realtimeSinceStartup < _plugin.ToastUntil && _plugin.Toast.Length > 0)
@@ -280,6 +283,7 @@ namespace ValPerfMonitor
             KindCard(RunKind.Single, "Single test", $"One mode for {p.CfgBenchmarkSeconds.Value:0} s, then stops and saves.");
             KindCard(RunKind.Continuous, "Continuous recording", "One mode until you press Stop. Good for recording a whole play session (logs every 10 s).");
             KindCard(RunKind.Objects, "Most expensive objects", "Times each object's per-frame code (creatures, fires, smelters, mod objects) for 20 s and ranks objects and prefabs. Results in the log and object_costs.csv.");
+            KindCard(RunKind.Memory, "Memory census", "Counts which mods, game systems and Harmony patches keep the most objects in memory, times a full garbage collection, and shows what grew since the last census. Results in the log and a memory_census file.");
 
             if (_kind == RunKind.Objects)
             {
@@ -292,6 +296,26 @@ namespace ValPerfMonitor
                     if (oc.Error != null) p.ShowToast("Object costs: " + oc.Error);
                     p.SetPanel(false);
                 }
+                return;
+            }
+
+            if (_kind == RunKind.Memory)
+            {
+                GUILayout.Space(8);
+                GUILayout.Label("Stand still. The game stutters for a few seconds while the census counts. Run it again later in the same spot: " +
+                                "the second census shows what grew since the first (a mod whose objects keep growing is likely leaking memory).", _wrap);
+                var last = MemoryCensus.Last;
+                if (last != null && last.Done && last.Error == null)
+                    GUILayout.Label($"<color=#aaaaaa>Last census: {(DateTime.Now - last.FinishedAt).TotalMinutes:0} min ago, full garbage collection {last.GcMedianMs:0} ms, {MemoryCensus.Millions(last.Objects)} objects.</color>", _wrap);
+                GUILayout.Space(6);
+                GUI.enabled = MemoryCensus.Running == null;
+                if (GUILayout.Button("▶  Count what fills memory", _big, GUILayout.Height(38)))
+                {
+                    var mc = p.StartMemoryCensus(100);
+                    if (mc.Error != null) p.ShowToast("Memory census: " + mc.Error);
+                    p.SetPanel(false);
+                }
+                GUI.enabled = true;
                 return;
             }
 

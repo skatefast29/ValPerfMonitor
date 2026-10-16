@@ -2,7 +2,19 @@
 
 ## Unreleased
 
-- **Memory census** (`perf/memory_census` / `perf/memory_census_result`): counts every object reachable from static fields and from all components and ScriptableObjects, and groups them by mod, by root (one static field, or all components of one type) and by object type, with approximate MB. Then it times a full garbage collection, whose length grows with the number of live objects. Results go to the log in plain English and to `memory_census_<time>.txt`. Static fields are read straight from memory, so no mod's setup code is ever run early (a self-test checks this on every run). The work is spread over frames (about 4 s at up to 100 ms per frame) and those frames are left out of captures. The census's own bookkeeping is never counted, and the monitor's own memory is shown on a separate line.
+- **Memory census** (new in the F11 Run tab, and `perf/memory_census` / `perf/memory_census_result`): counts every object kept in memory (reachable from static fields and from all components and ScriptableObjects) and groups them by mod, by root (one static field, or all components of one type) and by object type, with approximate MB. Then it times a full garbage collection, whose length grows with the number of live objects. Results go to the log in plain English and to `memory_census_<time>.txt`, which has column headers and a summary on top. Static fields are read straight from memory, so no mod's setup code is ever run early (a self-test checks this on every run). The work is spread over a few seconds of frames, which are left out of captures; a running recording is ended (and saved) first. The monitor's own memory is shown on a separate line.
+  - **What grew** (leak finder): each census is compared with the previous one this session, by owner and by root, so a mod whose objects keep growing while you stand in one place stands out.
+  - **Harmony's share by mod**: Harmony's copies of patched methods (the biggest single holder in a modded game) are split over the mods patching each method, with the monitor's own probes on their own line.
+- **Cheaper when idle**: when a recording or test ends, the probes and the network counting stop doing any work. Before, they kept costing about 0.3–1 ms per frame until the game closed. The once-a-minute object scan, memory check (`memory.csv`) and 10-second world sample now only run while something is recording, so idle play no longer stutters once a minute.
+- **Tests stay clean**:
+  - `perf/alloc_check` and `perf/worldgen_cost` refuse to run during a suite, timed test, A/B test, object costs or memory census. The frames of those tools and of `perf/objects`, `perf/slow_objects` and `perf/session_logs` are never counted.
+  - Splitting slow spawns into parts no longer adds timers in the middle of a test or a Baseline capture.
+  - A test stops (keeping what it recorded) when you log out or die, instead of carrying on at the main menu.
+  - The full suite (Shift+F11 or the panel) needs a loaded world, like the other tests; before, it could start its Baseline step at the main menu.
+- **`perf/worldgen_cost` is fairer**: the monitor's own probes on the mod's world-generator patches come off while it times them. Before, they made the mod look slower than it is.
+- **A/B test turns stay out of the run history**: each turn still gets its own folder and report, but no longer adds rows to `runs.csv` and `compare.html`; the result is in `ab_tests.csv` as before.
+- `perf/start_suite` no longer saves its label and seconds as your "Run label" and "Seconds per mode" settings; they apply to that suite only.
+- Removed the unused "Compact" setting under "5 - Overlay" (the live overlay's own Compact mode is unchanged).
 
 ## 1.1.0
 

@@ -20,6 +20,17 @@ namespace ValPerfMonitor
     {
         private static Plugin P => Plugin.Instance;
 
+        /// <summary>
+        /// For tools that do real work in the calling frame: that frame is left out of captures, and with
+        /// refuse = true the tool must not run alongside a test. Returns the error, or null to go ahead.
+        /// </summary>
+        private static string Busy(Plugin p, bool refuse)
+        {
+            p.MarkHeavy();
+            string test = p.TestRunning;
+            return refuse && test != null ? $"{test} is running; wait for it to finish, or stop it first (perf/stop)" : null;
+        }
+
         [BridgeTool("perf/status", "What ValPerfMonitor is doing: capture, mode, suite step, seconds counted, warm-up")]
         private static object Status()
         {
@@ -48,10 +59,9 @@ namespace ValPerfMonitor
             var p = P;
             if (p == null) return new { success = false, error = "monitor not started" };
             if (!p.WorldReady) return new { success = false, error = "not in a world yet (or the world is still loading)" };
-            if (label.Length > 0) p.CfgLabel.Value = label;
-            if (seconds >= 15) p.CfgSuiteSeconds.Value = seconds;
-            p.StartTimed(fullSuite: true, CaptureMode.Timing);
-            return new { success = p.Suite != null, label = p.CfgLabel.Value, secondsPerMode = p.CfgSuiteSeconds.Value };
+            // For this suite only: the owner's own "Run label" and "Seconds per mode" settings stay as they are.
+            p.StartTimed(fullSuite: true, CaptureMode.Timing, string.IsNullOrWhiteSpace(label) ? null : label, seconds >= 15 ? seconds : 0);
+            return new { success = p.Suite != null, label = p.Suite?.Label ?? "", secondsPerMode = p.Suite?.Seconds ?? 0f };
         }
 
         [BridgeTool("perf/split_startup", "On the next launch, split these mods' startup into their own methods (comma-separated names or GUIDs) and/or the N slowest mods of this launch; empty and 0 = off. Results in perf/load_times after restart")]
@@ -156,6 +166,10 @@ namespace ValPerfMonitor
         [BridgeTool("perf/alloc_check", "Confirm a suspected garbage source: call a method (type and method name, e.g. ZDOMan / ReleaseNearbyZDOS) many times right now and report bytes and microseconds per call. Arguments are filled from the live game; floats use timeArg: now, future or a number. The method really runs.")]
         private static object AllocCheckTool(string type, string method, int calls = 2000, string timeArg = "now")
         {
+            var p = P;
+            if (p == null) return new { success = false, error = "monitor not started" };
+            string busy = Busy(p, refuse: true);
+            if (busy != null) return new { success = false, error = busy };
             var r = AllocCheck.Run(type, method, calls, timeArg);
             return new
             {
@@ -172,7 +186,9 @@ namespace ValPerfMonitor
         {
             var p = P;
             if (p == null) return new { success = false, error = "monitor not started" };
-            var r = WorldGenCost.Run(mod, points, p.Registry, Plugin.Guid);
+            string busy = Busy(p, refuse: true);
+            if (busy != null) return new { success = false, error = busy };
+            var r = WorldGenCost.Run(mod, points, p.Registry, Plugin.Guid, p.Instrumenter);
             double measured = double.NaN;
             var load = p.Loads?.WorldLoads.LastOrDefault();
             if (load != null)
@@ -194,6 +210,7 @@ namespace ValPerfMonitor
         [BridgeTool("perf/objects", "Objects loaded right now, grouped by prefab, most common first, with mods whose components are on them and how many are stacked exactly on a copy of themselves. Shows what fills the scene")]
         private static object Objects(int count = 25)
         {
+            if (P != null) Busy(P, refuse: false);
             var list = ObjectLoads.Loaded(Math.Max(1, count), out int total, out int stacked);
             if (list == null) return new { success = false, error = "not in a world yet" };
             return new
@@ -209,6 +226,7 @@ namespace ValPerfMonitor
         {
             var p = P;
             if (p == null) return new { success = false, error = "monitor not started" };
+            Busy(p, refuse: false);
             p.WriteSlowObjects();
             return new
             {
@@ -323,6 +341,7 @@ namespace ValPerfMonitor
         [BridgeTool("perf/session_logs", "Past game sessions from their saved logs (newest first): when each ended, whether it closed normally, did not (froze, Task Manager) or crashed, and its errors and warnings with the log names that had the most errors. search = text to find in those logs (matching lines). log = a file name (or 'latest') to read its last lines. Also the report of the last session that did not close normally")]
         private static object SessionLogsTool(int count = 10, string search = "", string log = "", int lines = 40)
         {
+            if (P != null) Busy(P, refuse: false); // reading saved logs can take a while
             var files = SessionCheck.SavedLogs();
             var listed = files.Take(Math.Max(1, Math.Min(50, count))).ToList();
             object matches = null;
@@ -370,7 +389,7 @@ namespace ValPerfMonitor
             };
         }
 
-        [BridgeTool("perf/memory_census", "Count what keeps the managed heap full: every object reachable from static fields and from all components/ScriptableObjects, grouped by mod, by root (one static field or one component type) and by object type, then time a full garbage collection. Static fields are read without running any setup code. The game stutters for a few seconds (up to budgetMs per frame); stand still. Read with perf/memory_census_result")]
+        [BridgeTool("perf/memory_census", "Count what keeps the managed heap full: every object reachable from static fields and from all components/ScriptableObjects, grouped by mod, by root (one static field or one component type) and by object type, plus Harmony's copies of patched methods split by patching mod, then time a full garbage collection. Each census is compared with the previous one this session (what grew: leak finder). Static fields are read without running any setup code. The game stutters for a few seconds (up to budgetMs per frame); stand still. Read with perf/memory_census_result")]
         private static object MemoryCensusTool(int budgetMs = 100)
         {
             var p = P;
@@ -380,35 +399,58 @@ namespace ValPerfMonitor
             return new { success = true, budgetMs = mc.BudgetMs, note = "read the result with perf/memory_census_result" };
         }
 
-        [BridgeTool("perf/memory_census_result", "Result of the running or last perf/memory_census: plain-English summary, full garbage collection ms, and the owners (mods, game, engine), roots and object types keeping the most live objects and MB")]
+        [BridgeTool("perf/memory_census_result", "Result of the running or last perf/memory_census. All sizes are MB (numbers), all counts are object counts. summary: plain-English lines. gc: full garbage collection ms. byOwner / byRoot / byType: what keeps the most live objects. harmonyByMod: Harmony's copies of patched methods per patching mod. growth: what grew since the previous census this session (null on the first)")]
         private static object MemoryCensusResult(int count = 15)
         {
             var mc = MemoryCensus.Running ?? MemoryCensus.Last;
             if (mc == null) return new { success = false, error = "no memory census this session" };
             if (!mc.Done) return new { success = true, done = false, status = mc.Status, frames = mc.Frames };
+            if (mc.Error != null) return new { success = false, done = true, error = mc.Error };
             int n = Math.Max(1, count);
             return new
             {
-                success = mc.Error == null, error = mc.Error, done = true,
+                success = true, done = true,
                 summary = mc.Plain(),
-                fullGcMs = mc.GcMs.Select(x => Math.Round(x, 1)).ToList(),
-                monoUsedMbBefore = MemoryCensus.Mb(mc.MonoUsedBefore), monoUsedMbAfterGc = MemoryCensus.Mb(mc.MonoUsedAfterGc),
-                monoHeapMbBefore = MemoryCensus.Mb(mc.MonoHeapBefore), monoHeapMbAfter = MemoryCensus.Mb(mc.MonoHeapAfter),
-                objects = mc.Objects, countedMb = MemoryCensus.Mb(mc.CountedBytes), walkSeconds = Math.Round(mc.WalkSeconds, 1), mc.Frames,
-                staticsRead = mc.StaticsRead, staticsNote = mc.StaticsNote, mc.StaticRoots, typesNotSetUp = mc.TypesNotSetUp,
-                mc.Errors, errorSamples = mc.ErrorSamples, mc.Unreadable, unreadableSamples = mc.UnreadableSamples,
-                censusWorkSeconds = Math.Round(mc.SliceMsTotal / 1000, 1), longestFrameMs = Math.Round(mc.MaxSliceMs, 0), longestFrameAt = mc.MaxSliceAt, gcsDuringWalk = mc.GcsDuringWalk,
-                byOwner = mc.ByOwner.Take(n).Select(r => new { owner = r.Name, r.Count, mb = MemoryCensus.Mb(r.Bytes) }).ToList(),
-                monitorItself = mc.Self == null ? null : new { mc.Self.Count, mb = MemoryCensus.Mb(mc.Self.Bytes) },
+                file = mc.File,
+                gc = new { medianMs = Math.Round(mc.GcMedianMs, 1), runsMs = mc.GcMs.Select(x => Math.Round(x, 1)).ToList() },
+                memory = new
+                {
+                    monoUsedMbBefore = MemoryCensus.MbNum(mc.MonoUsedBefore), monoUsedMbAfterGc = MemoryCensus.MbNum(mc.MonoUsedAfterGc),
+                    monoHeapMbBefore = MemoryCensus.MbNum(mc.MonoHeapBefore), monoHeapMbAfter = MemoryCensus.MbNum(mc.MonoHeapAfter),
+                    objectsReached = mc.Objects, objectsMb = MemoryCensus.MbNum(mc.CountedBytes),
+                },
+                byOwner = mc.ByOwner.Take(n).Select(r => new { owner = r.Name, objects = r.Count, mb = MemoryCensus.MbNum(r.Bytes) }).ToList(),
+                monitorItself = mc.Self == null ? null : new { objects = mc.Self.Count, mb = MemoryCensus.MbNum(mc.Self.Bytes) },
                 byRoot = mc.ByRoot.Take(n).Select(r => new
                 {
-                    r.Owner, root = r.Name, r.Count, mb = MemoryCensus.Mb(r.Bytes),
-                    types = r.Types.Select(t => $"{t.count:N0} x {t.type} ({MemoryCensus.Mb(t.bytes)} MB)").ToList(),
+                    owner = r.Owner, root = r.Name, objects = r.Count, mb = MemoryCensus.MbNum(r.Bytes),
+                    topTypes = r.Types.Select(t => new { t.type, objects = t.count, mb = MemoryCensus.MbNum(t.bytes) }).ToList(),
                 }).ToList(),
-                byType = mc.ByType.Take(n).Select(t => new { t.type, t.count, mb = MemoryCensus.Mb(t.bytes) }).ToList(),
-                big = mc.Big.Take(n).Select(b => $"{MemoryCensus.Mb(b.bytes)} MB {b.what}").ToList(),
-                file = mc.File,
-                note = "Sizes are approximate. Each object counts once, under the first root that reaches it (game and engine first, then mods). Sorted by object count, which is what makes a full garbage collection slow.",
+                byType = mc.ByType.Take(n).Select(t => new { t.type, objects = t.count, mb = MemoryCensus.MbNum(t.bytes) }).ToList(),
+                harmonyByMod = mc.PatchedMethods == 0 ? null : new
+                {
+                    patchedMethods = mc.PatchedMethods, objects = mc.PatchObjects, mb = MemoryCensus.MbNum(mc.PatchBytes),
+                    mods = mc.HarmonyByMod.Take(n).Select(x => new { mod = x.mod, methods = x.methods, objects = x.count, mb = MemoryCensus.MbNum(x.bytes) }).ToList(),
+                    note = "A method patched by several mods is shared out evenly between them. '" + MemoryCensus.SelfPatches + "' is the monitor's own cost and goes away without it.",
+                },
+                growth = !mc.HasPrevious ? null : new
+                {
+                    minutesSincePrevious = Math.Round(mc.PrevMinutesAgo, 1),
+                    objectsChange = mc.Objects - mc.PrevObjects,
+                    liveMbChange = MemoryCensus.MbNum(mc.MonoUsedAfterGc - mc.PrevUsedAfterGc),
+                    gcMsBefore = Math.Round(mc.PrevGcMs, 1), gcMsNow = Math.Round(mc.GcMedianMs, 1),
+                    byOwner = mc.OwnerGrowth.Take(n).Select(g => new { owner = g.name, objectsAdded = g.count, mbAdded = MemoryCensus.MbNum(g.bytes) }).ToList(),
+                    byRoot = mc.RootGrowth.Take(n).Select(g => { var (o, r) = MemoryCensus.SplitKey(g.name); return new { owner = o, root = r, objectsAdded = g.count, mbAdded = MemoryCensus.MbNum(g.bytes) }; }).ToList(),
+                    note = "Only what grew. A root never shows more than its owner grew (objects can move between roots of one owner between censuses). Growth in every census while standing in one place suggests a leak; one-off growth is usually objects loading as the player moves.",
+                },
+                bigObjects = mc.Big.Take(n).Select(b => new { totalMb = MemoryCensus.MbNum(b.bytes), what = b.what }).ToList(), // objects of 4 MB or more; "N x" = N of one type under one root
+                census = new
+                {
+                    staticsRead = mc.StaticsRead, staticsNote = mc.StaticsNote, staticFields = mc.StaticRoots, typesNotSetUp = mc.TypesNotSetUp,
+                    components = mc.ComponentObjects, readErrors = mc.Errors, errorSamples = mc.ErrorSamples, unreadable = mc.Unreadable, unreadableSamples = mc.UnreadableSamples,
+                    workSeconds = Math.Round(mc.SliceMsTotal / 1000, 1), frames = mc.Frames, longestFrameMs = Math.Round(mc.MaxSliceMs, 0), longestFrameAt = mc.MaxSliceAt, gcsDuringWalk = mc.GcsDuringWalk,
+                },
+                note = "Sizes are approximate. Each object counts once, under the first root that reaches it (game and engine first, then libraries, then mods). Lists are sorted by object count, which is what makes a full garbage collection slow.",
             };
         }
 

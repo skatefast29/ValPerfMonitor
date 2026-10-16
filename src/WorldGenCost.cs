@@ -31,7 +31,7 @@ namespace ValPerfMonitor
         private const int Size = 2048;
         private const float MaxSqr = 110250000f; // outside this the game skips the point (ocean)
 
-        public static Result Run(string modName, int points, ModRegistry registry, string monitorGuid)
+        public static Result Run(string modName, int points, ModRegistry registry, string monitorGuid, Instrumenter instrumenter)
         {
             var r = new Result();
             var wg = WorldGenerator.instance;
@@ -50,26 +50,36 @@ namespace ValPerfMonitor
             int stride = Math.Max(1, (int)Math.Ceiling(Math.Sqrt((double)r.FullPoints / Math.Max(1000, points))));
             r.Points = CountInside(stride);
 
+            // The monitor's probes on the mod's patch methods would be timed with the mod but not without it,
+            // making the mod look slower than it is: they come off for the measurement.
+            var probesOff = instrumenter?.TakeProbesOff(removed.Select(x => x.Patch.PatchMethod)) ?? new List<MethodBase>();
             try
             {
-                Sweep(wg, 16); // compile and warm up first
-                r.MicrosWith = Sweep(wg, stride) / r.Points;
-            }
-            catch (Exception e) { r.Error = "the world generator failed: " + e.Message; return r; }
+                try
+                {
+                    Sweep(wg, 16); // compile and warm up first
+                    r.MicrosWith = Sweep(wg, stride) / r.Points;
+                }
+                catch (Exception e) { r.Error = "the world generator failed: " + e.Message; return r; }
 
-            try
-            {
-                foreach (var x in removed) new Harmony(x.Patch.owner).Unpatch(x.Original, x.Patch.PatchMethod);
-                Sweep(wg, 16);
-                r.MicrosWithout = Sweep(wg, stride) / r.Points;
-            }
-            catch (Exception e)
-            {
-                r.Note = $"Without {mod.Name}'s patches the game's own world generator failed ({e.Message}): it needs the mod's data, so it can't be compared this way.";
+                try
+                {
+                    foreach (var x in removed) new Harmony(x.Patch.owner).Unpatch(x.Original, x.Patch.PatchMethod);
+                    Sweep(wg, 16);
+                    r.MicrosWithout = Sweep(wg, stride) / r.Points;
+                }
+                catch (Exception e)
+                {
+                    r.Note = $"Without {mod.Name}'s patches the game's own world generator failed ({e.Message}): it needs the mod's data, so it can't be compared this way.";
+                }
+                finally
+                {
+                    PutBack(removed, r);
+                }
             }
             finally
             {
-                PutBack(removed, r);
+                instrumenter?.PutProbesBack(probesOff);
             }
 
             r.SecondsWith = r.MicrosWith * r.FullPoints / 1e6;

@@ -47,7 +47,7 @@ namespace ValPerfMonitor
         internal ConfigEntry<float> CfgSplitSpawnMs;
         internal ConfigEntry<string> CfgExtraMethods, CfgSplitStartupMods;
         internal ConfigEntry<int> CfgSplitStartupSlowest;
-        internal ConfigEntry<bool> CfgUnityCallbacks, CfgGameSystems, CfgCompact, CfgRecordOnLaunch, CfgSuiteAlloc, CfgSuiteTrace, CfgSuiteHideOverlay;
+        internal ConfigEntry<bool> CfgUnityCallbacks, CfgGameSystems, CfgRecordOnLaunch, CfgSuiteAlloc, CfgSuiteTrace, CfgSuiteHideOverlay;
         internal ConfigEntry<KeyboardShortcut> CfgToggleKey, CfgRestartKey, CfgSuiteKey, CfgOverlayKey;
         internal ConfigEntry<float> CfgInterval, CfgSummaryInterval, CfgFrameSpikeMs, CfgOwnerSpikeMs, CfgOwnerSpikeKb, CfgPatchBudgetMs, CfgTestPatchBudgetMs,
                                     CfgWarmup, CfgSwitchWarmup, CfgWorldSettle, CfgMonitorExcludeMs, CfgSuiteSeconds, CfgBenchmarkSeconds, CfgScale;
@@ -138,7 +138,6 @@ namespace ValPerfMonitor
             CfgRows = Config.Bind("5 - Overlay", "Rows", 15, "");
             CfgFontSize = Config.Bind("5 - Overlay", "Font size", 13, "");
             CfgScale = Config.Bind("5 - Overlay", "Scale", 1f, "Overall overlay scale (for 1440p/4K).");
-            CfgCompact = Config.Bind("5 - Overlay", "Compact", false, "Hide the frame-time graph.");
             CfgPosX = Config.Bind("5 - Overlay", "Position X", 20, "");
             CfgPosY = Config.Bind("5 - Overlay", "Position Y", 80, "");
 
@@ -207,7 +206,7 @@ namespace ValPerfMonitor
             };
             _nextMemory = _sessionStart + 30f;
             _lastGcCount = GC.CollectionCount(0);
-            Probe.Recording = true;
+            Probe.Recording = false; // on while a capture runs (StartCapture), off when idle (GoIdle)
             _autoStartPending = CfgRecordOnLaunch.Value;
             StartCoroutine(FrameLoop());
         }
@@ -309,7 +308,17 @@ namespace ValPerfMonitor
                 SetPanel(!_overlay.PanelOpen);
 
             bool inWorld = Player.m_localPlayer != null && ZNetScene.instance != null;
-            if (!inWorld) _worldSince = -1f;
+            if (!inWorld)
+            {
+                // A test can't go on without the world it measures (logout, death): stop it and keep what it recorded.
+                if (_worldSince >= 0 && TestRunning != null)
+                {
+                    Logger.LogInfo($"Left the world (logout or death) during {TestRunning}: stopped.");
+                    StopTest();
+                    ShowToast("Left the world: the test was stopped; what was recorded is saved.");
+                }
+                _worldSince = -1f;
+            }
             else if (_worldSince < 0) _worldSince = Time.realtimeSinceStartup;
             if (_autoStartPending && WorldReady)
             {
@@ -335,7 +344,8 @@ namespace ValPerfMonitor
                 BeginWarmup();
             }
             // Splitting slow spawns into parts: hooks a few startup methods at a time, after the main probes.
-            if (Instrumenter.Pending == 0 && SpawnParts.Drain(budget))
+            // Not during tests or Baseline: new hooks mid-test would make its turns or steps run different code.
+            if (Instrumenter.Pending == 0 && TestRunning == null && (Current == null || Current.Mode != CaptureMode.Baseline) && SpawnParts.Drain(budget))
                 _heavy = true;
 
             float now = Time.realtimeSinceStartup;
@@ -351,12 +361,13 @@ namespace ValPerfMonitor
                 }
             }
 
-            // Every minute: pick up classes that only now have live objects (new scene, biome, creatures), and
-            // record object counts for leak tracking. Both walk every live object, so they share one list.
-            // Not during timed tests: new hooks would restart the warm-up, and the walk is a hitch.
+            // Every minute while recording: pick up classes that only now have live objects (new scene, biome,
+            // creatures), and record object counts for leak tracking. Both walk every live object, so they share one
+            // list. Not during timed tests (new hooks would restart the warm-up, and the walk is a hitch), and not
+            // while idle: nobody reads the result then, and the walk is a stutter the player feels.
             bool scanDue = now >= _nextLiveScan && Instrumenter.Pending == 0 && Instrumenter.Hooked;
             bool memoryDue = CfgMemorySeconds.Value > 0 && now >= _nextMemory;
-            if ((scanDue || memoryDue) && Suite == null && Ab == null && ObjectCosts.Running == null && MemoryCensus.Running == null)
+            if ((scanDue || memoryDue) && Current != null && TestRunning == null)
             {
                 _heavy = true;
                 UnityEngine.Object[] behaviours = null;
@@ -395,9 +406,12 @@ namespace ValPerfMonitor
             if (now >= _nextInterval)
             {
                 _nextInterval = now + Mathf.Max(1f, CfgInterval.Value);
-                _heavy = true;
-                Context.Sample(full: true);
-                Current?.WriteInterval(SessionSeconds, Context);
+                if (Current != null) // nothing reads it while idle
+                {
+                    _heavy = true;
+                    Context.Sample(full: true);
+                    Current.WriteInterval(SessionSeconds, Context);
+                }
             }
             if (now >= _nextSummary)
             {
@@ -455,6 +469,12 @@ namespace ValPerfMonitor
                 Instrumenter.ScanLiveBehaviours(); // the world's objects exist now
                 _nextLiveScan = Time.realtimeSinceStartup + 60f;
             }
+            else if (Instrumenter.Pending == 0)
+            {
+                // Objects that loaded while idle (no scans then): their probes go on now, with the usual warm-up after.
+                Instrumenter.ScanLiveBehaviours();
+                _nextLiveScan = Time.realtimeSinceStartup + 60f;
+            }
             if (mode != CaptureMode.Baseline && CfgNetwork.Value)
                 Net.Attach(_harmony);
 
@@ -465,6 +485,7 @@ namespace ValPerfMonitor
             GarbageConfidence.ResetRate();
             Current = new Capture(++_captureNumber, mode, label, SessionFolder, Registry, Instrumenter, Counters, Writer, Net, CfgWindowFrames.Value);
             Current.LogBefore = LogWatch.Instance?.Snapshot();
+            Probe.Recording = true;
             MonitorBytes = 0;
             Context.Sample(full: true);
             _warmupUntil = 0;
@@ -505,8 +526,16 @@ namespace ValPerfMonitor
         }
 
         /// <summary>A timed test: the full suite, or one mode for a fixed time. Ends idle with results saved.</summary>
-        internal void StartTimed(bool fullSuite, CaptureMode mode)
+        /// <param name="label">null = the "Run label" setting.</param>
+        /// <param name="seconds">0 = the setting for this kind of test.</param>
+        internal void StartTimed(bool fullSuite, CaptureMode mode, string label = null, float seconds = 0)
         {
+            if (!WorldReady)
+            {
+                ShowToast(_worldSince < 0 ? "Load into a world first: tests start once the world is loaded."
+                                          : $"The world is still settling; try again in {WorldReadyIn:0} s.");
+                return;
+            }
             AbortAb();
             var steps = new List<CaptureMode>();
             if (!fullSuite) steps.Add(CanUse(mode) ? mode : CaptureMode.Timing);
@@ -517,7 +546,8 @@ namespace ValPerfMonitor
                 if (CfgSuiteAlloc.Value && AllocCounter.Available) steps.Add(CaptureMode.Allocations);
                 if (CfgSuiteTrace.Value) steps.Add(CaptureMode.Trace);
             }
-            Suite = new Suite(steps, fullSuite ? CfgSuiteSeconds.Value : CfgBenchmarkSeconds.Value, CfgLabel.Value, !fullSuite);
+            if (seconds <= 0) seconds = fullSuite ? CfgSuiteSeconds.Value : CfgBenchmarkSeconds.Value;
+            Suite = new Suite(steps, seconds, label ?? CfgLabel.Value, !fullSuite);
             Logger.LogInfo($"{(fullSuite ? "Suite" : "Test")} started: {string.Join(" -> ", steps)}, {Suite.Seconds:0} s each.");
             Suite.Begin(this);
         }
@@ -525,11 +555,11 @@ namespace ValPerfMonitor
         /// <summary>Stop whatever is running, save what was recorded, and go idle.</summary>
         internal void StopTest()
         {
-            bool wasSuite = Suite != null || Ab != null || ObjectCosts.Running != null;
+            bool wasSuite = Suite != null || Ab != null || ObjectCosts.Running != null || MemoryCensus.Running != null;
             AbortAb();
             Suite = null;
             FinishCapture();
-            Current = null;
+            GoIdle();
             ShowToast(wasSuite ? "Test stopped early; what was recorded is saved." : "Recording stopped and saved.");
         }
 
@@ -600,6 +630,12 @@ namespace ValPerfMonitor
             string title = $"{c.Mode} {c.Number}{(c.Label.Length > 0 ? " " + c.Label : "")}";
             Writer.Write(Path.Combine(c.Folder, "report.html"), Report.CaptureHtml(json, title));
 
+            if (c.AbTurn)
+            {
+                // One turn of an A/B test: its result goes to ab_tests.csv, not the run history.
+                Logger.LogInfo($"Capture {c.Number} (A/B turn) saved: {Path.Combine(c.Folder, "report.html")}");
+                return;
+            }
             string rel = Path.Combine(SessionName, Path.GetFileName(c.Folder)).Replace('\\', '/');
             string runsCsv = Path.Combine(RootFolder, "runs.csv");
             RunStamp.UpgradeHeader(runsCsv, Report.RunCsvHeader);
@@ -819,6 +855,13 @@ namespace ValPerfMonitor
             var mc = new MemoryCensus(budgetMs, Registry);
             if (MemoryCensus.Running != null) { mc.Error = "a memory census is already running"; return mc; }
             if (Suite != null || Ab != null || ObjectCosts.Running != null) { mc.Error = "a test is running; stop it first (perf/stop)"; return mc; }
+            if (Current != null)
+            {
+                // Its forced garbage collections would change the recording's GC numbers from here on.
+                Logger.LogInfo($"Memory census: ending capture {Current.Number} ({Current.Mode}) first; it is saved.");
+                FinishCapture();
+                GoIdle();
+            }
             MemoryCensus.Running = MemoryCensus.Last = mc;
             Logger.LogInfo($"Memory census started: counting live objects in slices of up to {mc.BudgetMs} ms per frame. Stand still; the game stutters for a few seconds.");
             return mc;
@@ -835,7 +878,10 @@ namespace ValPerfMonitor
             foreach (var line in mc.Plain()) Logger.LogInfo("  " + line);
             if (mc.Errors > 0) Logger.LogInfo($"  {mc.Errors} objects could not be read (skipped).");
             Logger.LogInfo("  Full list: " + file);
-            ShowToast($"Memory census finished: full garbage collection {mc.GcMedianMs:0} ms, {MemoryCensus.Millions(mc.Objects)} objects. Details in the log.", 15f);
+            string growth = !mc.HasPrevious ? "" : mc.OwnerGrowth.Count > 0
+                ? $" Grew most since the last census: {mc.OwnerGrowth[0].name} ({MemoryCensus.Signed(mc.OwnerGrowth[0].count)} objects)."
+                : " Nothing grew since the last census.";
+            ShowToast($"Memory census finished: full garbage collection {mc.GcMedianMs.ToString("0", Csv.Inv)} ms, {MemoryCensus.Millions(mc.Objects)} objects.{growth} Details in the log.", 15f);
         }
 
         /// <summary>The Baseline capture under an object costs recording had its timers on: not a clean run, so not saved.</summary>
@@ -844,7 +890,7 @@ namespace ValPerfMonitor
             if (Current != null && Current.Mode == CaptureMode.Baseline && Current.Label == ObjectCosts.CaptureLabel)
             {
                 Current.Finished = true;
-                Current = null;
+                GoIdle();
             }
         }
 
@@ -857,6 +903,12 @@ namespace ValPerfMonitor
                 DropObjectCostsCapture();
                 Logger.LogInfo("Object costs stopped early; timers removed.");
             }
+            if (MemoryCensus.Running != null)
+            {
+                MemoryCensus.Running.Abort();
+                MemoryCensus.Running = null;
+                Logger.LogInfo("Memory census stopped early.");
+            }
             if (Ab == null) return;
             Ab.Abort();
             Logger.LogInfo($"A/B test stopped early; everything put back.{(Ab.Phases.Count > 0 ? " So far: " + Ab.Verdict : "")}");
@@ -867,7 +919,7 @@ namespace ValPerfMonitor
         {
             Ab = null;
             FinishCapture();
-            Current = null;
+            GoIdle();
             Logger.LogInfo($"A/B test finished: {t.What}");
             foreach (var ph in t.Phases)
                 Logger.LogInfo($"  turn {(ph.On ? "normal" : "off   ")}: main-thread CPU {ph.CpuMainMs:0.000} ms, frame {ph.FrameMs:0.00} ms, garbage {ph.GarbageKbPerFrame:0.0} KB/frame, 1% low {ph.Fps1Low:0.0} FPS, {ph.GcPerMin:0.0} GC/min, {ph.SlowPerMin:0.0} slow frames/min; weather {ph.WeatherText}, moved {ph.MovedM:0} m, {ph.ObjectsMin}-{ph.ObjectsMax} objects loaded");
@@ -882,16 +934,29 @@ namespace ValPerfMonitor
         {
             Suite = null;
             FinishCapture();
-            Current = null;
+            GoIdle();
             Logger.LogInfo($"{(suite.Single ? "Test" : "Suite")} finished. Compare runs: {Path.Combine(RootFolder, "compare.html")}");
             ShowToast($"{(suite.Single ? "Test" : "Suite")} finished. Press F11 and open Results.", 20f);
         }
 
-        internal void SetRecording(bool on)
+        /// <summary>
+        /// Nothing is recording. The probes stay attached (taking them off and on again costs seconds of hooking each
+        /// way) but stop doing any work, and so does the network counting.
+        /// </summary>
+        private void GoIdle()
         {
-            Probe.Recording = on;
-            if (on) BeginShortWarmup();
+            Current = null;
+            Probe.Recording = false;
+            if (Net != null) Net.Recording = false;
         }
+
+        /// <summary>The on-demand test running now (one that must not be disturbed), or null.</summary>
+        internal string TestRunning =>
+            Suite != null ? (Suite.Single ? "a timed test" : "a suite") : Ab != null ? "an A/B test" :
+            ObjectCosts.Running != null ? "object costs" : MemoryCensus.Running != null ? "a memory census" : null;
+
+        /// <summary>This frame did work for a bridge command: never count it in a capture.</summary>
+        internal void MarkHeavy() => _heavy = true;
 
         private void RefreshSourceNames()
         {

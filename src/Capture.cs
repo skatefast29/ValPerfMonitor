@@ -36,6 +36,8 @@ namespace ValPerfMonitor
         public readonly List<IntervalPoint> Points = new List<IntervalPoint>();
         public int TracesWritten;
         public bool Finished;
+        /// <summary>One turn of an A/B test: saved in its folder, but not added to the run history.</summary>
+        public bool AbTurn;
         // How often each log message had been seen when the capture started (LogWatch), to count only this capture's.
         public Dictionary<string, int> LogBefore;
 
