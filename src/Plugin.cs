@@ -356,7 +356,7 @@ namespace ValPerfMonitor
             // Not during timed tests: new hooks would restart the warm-up, and the walk is a hitch.
             bool scanDue = now >= _nextLiveScan && Instrumenter.Pending == 0 && Instrumenter.Hooked;
             bool memoryDue = CfgMemorySeconds.Value > 0 && now >= _nextMemory;
-            if ((scanDue || memoryDue) && Suite == null && Ab == null && ObjectCosts.Running == null)
+            if ((scanDue || memoryDue) && Suite == null && Ab == null && ObjectCosts.Running == null && MemoryCensus.Running == null)
             {
                 _heavy = true;
                 UnityEngine.Object[] behaviours = null;
@@ -383,6 +383,13 @@ namespace ValPerfMonitor
             {
                 if (oc.Tick(Mathf.Max(CfgPatchBudgetMs.Value, CfgTestPatchBudgetMs.Value))) _heavy = true;
                 if (oc.Done) ObjectCostsFinished(oc);
+            }
+            var mc = MemoryCensus.Running;
+            if (mc != null)
+            {
+                mc.Tick();
+                _heavy = true; // its frames (and the garbage collections it forces) never count in a capture
+                if (mc.Done) MemoryCensusFinished(mc);
             }
 
             if (now >= _nextInterval)
@@ -806,6 +813,31 @@ namespace ValPerfMonitor
             ShowToast(top == null ? "Object costs finished: nothing measured." : $"Object costs finished. Most expensive: {top.Prefab} x{top.Objects} ({top.Ms:0.00} ms/frame). Details in the log.", 20f);
         }
 
+        /// <summary>Start a memory census (see MemoryCensus). Returns it; check Error.</summary>
+        internal MemoryCensus StartMemoryCensus(int budgetMs)
+        {
+            var mc = new MemoryCensus(budgetMs, Registry);
+            if (MemoryCensus.Running != null) { mc.Error = "a memory census is already running"; return mc; }
+            if (Suite != null || Ab != null || ObjectCosts.Running != null) { mc.Error = "a test is running; stop it first (perf/stop)"; return mc; }
+            MemoryCensus.Running = MemoryCensus.Last = mc;
+            Logger.LogInfo($"Memory census started: counting live objects in slices of up to {mc.BudgetMs} ms per frame. Stand still; the game stutters for a few seconds.");
+            return mc;
+        }
+
+        private void MemoryCensusFinished(MemoryCensus mc)
+        {
+            MemoryCensus.Running = null;
+            if (mc.Error != null) { Logger.LogWarning("Memory census: " + mc.Error); return; }
+            string file = Path.Combine(SessionFolder, "memory_census_" + DateTime.Now.ToString("HH-mm-ss", Csv.Inv) + ".txt");
+            mc.File = file;
+            Writer.Write(file, mc.Text());
+            Logger.LogInfo("Memory census finished:");
+            foreach (var line in mc.Plain()) Logger.LogInfo("  " + line);
+            if (mc.Errors > 0) Logger.LogInfo($"  {mc.Errors} objects could not be read (skipped).");
+            Logger.LogInfo("  Full list: " + file);
+            ShowToast($"Memory census finished: full garbage collection {mc.GcMedianMs:0} ms, {MemoryCensus.Millions(mc.Objects)} objects. Details in the log.", 15f);
+        }
+
         /// <summary>The Baseline capture under an object costs recording had its timers on: not a clean run, so not saved.</summary>
         private void DropObjectCostsCapture()
         {
@@ -876,6 +908,7 @@ namespace ValPerfMonitor
             Probe.Recording = false;
             Ab?.PutBack();
             ObjectCosts.Running?.Abort();
+            MemoryCensus.Running?.Abort();
             SessionCheck.Closed();
             _guard?.AllDone(); // a normal quit while hooking is not a crash
             if (Writer == null)

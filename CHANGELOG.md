@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Memory census** (`perf/memory_census` / `perf/memory_census_result`): counts every object reachable from static fields and from all components and ScriptableObjects, and groups them by mod, by root (one static field, or all components of one type) and by object type, with approximate MB. Then it times a full garbage collection, whose length grows with the number of live objects. Results go to the log in plain English and to `memory_census_<time>.txt`. Static fields are read straight from memory, so no mod's setup code is ever run early (a self-test checks this on every run). The work is spread over frames (about 4 s at up to 100 ms per frame) and those frames are left out of captures. The census's own bookkeeping is never counted, and the monitor's own memory is shown on a separate line.
+
 ## 1.1.0
 
 - **Most expensive objects** (new in the F11 Run tab, and `perf/object_costs` / `perf/object_costs_result`): for 20 s, each object's per-frame code (the game's update loops with the mod patches on them, and mods' own Update) is timed per object, then objects and prefabs are ranked (all loaded torches together, the single worst creature...). Results in the log and `object_costs.csv`, with an instanceId for ValAgentBridge's debug tools. The normal recording pauses while it runs (and is not saved as a run, since the timers add a little to every call); its timers come off afterwards.

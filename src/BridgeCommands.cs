@@ -370,6 +370,48 @@ namespace ValPerfMonitor
             };
         }
 
+        [BridgeTool("perf/memory_census", "Count what keeps the managed heap full: every object reachable from static fields and from all components/ScriptableObjects, grouped by mod, by root (one static field or one component type) and by object type, then time a full garbage collection. Static fields are read without running any setup code. The game stutters for a few seconds (up to budgetMs per frame); stand still. Read with perf/memory_census_result")]
+        private static object MemoryCensusTool(int budgetMs = 100)
+        {
+            var p = P;
+            if (p == null) return new { success = false, error = "monitor not started" };
+            var mc = p.StartMemoryCensus(budgetMs);
+            if (mc.Error != null) return new { success = false, error = mc.Error };
+            return new { success = true, budgetMs = mc.BudgetMs, note = "read the result with perf/memory_census_result" };
+        }
+
+        [BridgeTool("perf/memory_census_result", "Result of the running or last perf/memory_census: plain-English summary, full garbage collection ms, and the owners (mods, game, engine), roots and object types keeping the most live objects and MB")]
+        private static object MemoryCensusResult(int count = 15)
+        {
+            var mc = MemoryCensus.Running ?? MemoryCensus.Last;
+            if (mc == null) return new { success = false, error = "no memory census this session" };
+            if (!mc.Done) return new { success = true, done = false, status = mc.Status, frames = mc.Frames };
+            int n = Math.Max(1, count);
+            return new
+            {
+                success = mc.Error == null, error = mc.Error, done = true,
+                summary = mc.Plain(),
+                fullGcMs = mc.GcMs.Select(x => Math.Round(x, 1)).ToList(),
+                monoUsedMbBefore = MemoryCensus.Mb(mc.MonoUsedBefore), monoUsedMbAfterGc = MemoryCensus.Mb(mc.MonoUsedAfterGc),
+                monoHeapMbBefore = MemoryCensus.Mb(mc.MonoHeapBefore), monoHeapMbAfter = MemoryCensus.Mb(mc.MonoHeapAfter),
+                objects = mc.Objects, countedMb = MemoryCensus.Mb(mc.CountedBytes), walkSeconds = Math.Round(mc.WalkSeconds, 1), mc.Frames,
+                staticsRead = mc.StaticsRead, staticsNote = mc.StaticsNote, mc.StaticRoots, typesNotSetUp = mc.TypesNotSetUp,
+                mc.Errors, errorSamples = mc.ErrorSamples, mc.Unreadable, unreadableSamples = mc.UnreadableSamples,
+                censusWorkSeconds = Math.Round(mc.SliceMsTotal / 1000, 1), longestFrameMs = Math.Round(mc.MaxSliceMs, 0), longestFrameAt = mc.MaxSliceAt, gcsDuringWalk = mc.GcsDuringWalk,
+                byOwner = mc.ByOwner.Take(n).Select(r => new { owner = r.Name, r.Count, mb = MemoryCensus.Mb(r.Bytes) }).ToList(),
+                monitorItself = mc.Self == null ? null : new { mc.Self.Count, mb = MemoryCensus.Mb(mc.Self.Bytes) },
+                byRoot = mc.ByRoot.Take(n).Select(r => new
+                {
+                    r.Owner, root = r.Name, r.Count, mb = MemoryCensus.Mb(r.Bytes),
+                    types = r.Types.Select(t => $"{t.count:N0} x {t.type} ({MemoryCensus.Mb(t.bytes)} MB)").ToList(),
+                }).ToList(),
+                byType = mc.ByType.Take(n).Select(t => new { t.type, t.count, mb = MemoryCensus.Mb(t.bytes) }).ToList(),
+                big = mc.Big.Take(n).Select(b => $"{MemoryCensus.Mb(b.bytes)} MB {b.what}").ToList(),
+                file = mc.File,
+                note = "Sizes are approximate. Each object counts once, under the first root that reaches it (game and engine first, then mods). Sorted by object count, which is what makes a full garbage collection slow.",
+            };
+        }
+
         private static double? Round(double v) => double.IsNaN(v) ? (double?)null : Math.Round(v, 2);
     }
 }
