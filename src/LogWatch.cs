@@ -79,7 +79,8 @@ namespace ValPerfMonitor
                     if (m.Success) text = text.Substring(m.Length);
                 }
                 int nl = text.IndexOf('\n');
-                CountFlood(source, text, nl, error ? "error" : warning ? "warning" : "info");
+                if (error || warning || Written(e.Level))
+                    CountFlood(source, text, nl, error ? "error" : warning ? "warning" : e.Level.ToString().ToLowerInvariant());
                 if (!error && !warning) return;
                 string first = (nl < 0 ? text : text.Substring(0, nl)).Trim();
                 if (first.Length > 240) first = first.Substring(0, 240);
@@ -126,6 +127,24 @@ namespace ValPerfMonitor
         private readonly Dictionary<string, Flood> _floods = new Dictionary<string, Flood>();
         private readonly Queue<Flood> _newFloods = new Queue<Flood>();
         private long _lines;
+
+        private static LogLevel _written = LogLevel.None;
+
+        /// <summary>
+        /// Whether BepInEx writes this level to LogOutput.log (DiskLogListener.DisplayedLogLevel, "LogLevels" in
+        /// BepInEx.cfg). Lines of other levels (usually Debug) are dropped by BepInEx, so a flood of them fills nothing
+        /// and costs little: they are not counted as floods. All levels count when no disk log is found.
+        /// </summary>
+        private static bool Written(LogLevel level)
+        {
+            if (_written == LogLevel.None)
+            {
+                var written = LogLevel.None;
+                try { foreach (var l in Logger.Listeners.OfType<DiskLogListener>()) written |= l.DisplayedLogLevel; } catch { }
+                _written = written == LogLevel.None ? LogLevel.All : written;
+            }
+            return (level & _written) != 0;
+        }
 
         /// <summary>All log lines (any level) since the start.</summary>
         public long Lines { get { lock (_lock) return _lines; } }

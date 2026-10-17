@@ -378,7 +378,7 @@ namespace ValPerfMonitor
                     peakPerSecond = f.PeakPerSecond, secondsFlooding = f.FloodSeconds, lines = f.Total,
                     firstSecondsAgo = Math.Round(LogWatch.Now - f.FirstFlood, 0), lastSecondsAgo = Math.Round(LogWatch.Now - f.LastFlood, 0),
                 }).ToList(),
-                floodNote = $"A flood = one message written more than {LogWatch.FloodThreshold} times in one second. logWriteMsPerMinute = main-thread time BepInEx spent writing log lines (Unity's own cost of building errors comes on top).",
+                floodNote = $"A flood = one message written more than {LogWatch.FloodThreshold} times in one second (levels BepInEx doesn't write to LogOutput.log, usually Debug, are left out). logWriteMsPerMinute = main-thread time BepInEx spent writing log lines (Unity's own cost of building errors comes on top).",
                 file = System.IO.Path.Combine(p.SessionFolder, "log_errors.csv"),
             };
         }

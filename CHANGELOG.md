@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.2
+
+- **Log flood warning counts only lines that reach the log file.** Levels BepInEx drops (Debug in the default `LogLevels` of `BepInEx.cfg`) no longer trigger it, and the warning names the real level (info, message, warning, error).
+
 ## 1.3.1
 
 - **Fix: possible hitch when working out which mod an error belongs to.** Every line under an error or warning was looked up as if it were a line of a stack trace, including plain text (such as the monitor's own report on the last session). Each such line made the lookup search every type of every loaded mod, 0.1-0.3 s on the main thread the first time it was seen, and logged "AccessTools.TypeByName: Could not find type named ...". Now only real stack-trace lines are looked up, with a quick lookup in each loaded assembly, and the monitor's own messages are filed under the monitor.
