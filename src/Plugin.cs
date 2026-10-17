@@ -18,7 +18,7 @@ namespace ValPerfMonitor
     {
         public const string Guid = "valheimmods.ValPerfMonitor";
         public const string Name = "ValPerfMonitor";
-        public const string Version = "1.3.0";
+        public const string Version = "1.3.1";
 
         internal static Plugin Instance;
         internal ModRegistry Registry;

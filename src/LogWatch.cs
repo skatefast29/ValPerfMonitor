@@ -288,6 +288,7 @@ namespace ValPerfMonitor
         {
             var named = registry.Visible.FirstOrDefault(m => m.IsPlugin && m.Name == e.Source);
             if (named != null) return named.Name;
+            if (e.Source.StartsWith(Plugin.Name, StringComparison.Ordinal)) return Plugin.Name; // this monitor's own reports
             foreach (var frame in e.Stack.Split('\n'))
             {
                 string mod = FrameOwner(frame, registry, includeSelf: false);
@@ -321,7 +322,7 @@ namespace ValPerfMonitor
             owner = null;
             try
             {
-                var t = AccessTools.TypeByName(type);
+                var t = FindType(type);
                 Assembly asm = t?.Assembly;
                 if (asm != null && asm != typeof(ZNet).Assembly && asm != typeof(Plugin).Assembly)
                 {
@@ -338,8 +339,25 @@ namespace ValPerfMonitor
             return owner;
         }
 
+        /// <summary>
+        /// A type by its full name, asking each loaded assembly directly (a quick lookup in each). HarmonyX's
+        /// AccessTools.TypeByName instead walks every type of every assembly when the name isn't found, which takes
+        /// 0.1-0.3 s in a big mod list, and logs a warning.
+        /// </summary>
+        private static Type FindType(string name)
+        {
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (asm.IsDynamic) continue;
+                try { var t = asm.GetType(name, false); if (t != null) return t; } catch { }
+            }
+            return null;
+        }
+
         // "MyMod.Patches.Postfix (Character __instance) (at ...)", "  at MyMod.Foo.Bar () [0x0] in ...",
-        // "UnityEngine.Debug:Log (object)" -> the type's full name. Patched game methods (DMD wrappers) give null.
+        // "UnityEngine.Debug:Log (object)" -> the type's full name. Patched game methods (DMD wrappers) give null, and so
+        // does any line that isn't a stack frame (the text of a multi-line message): a frame always has "Type.Method ("
+        // or "Type:Method (", with no spaces before the parenthesis.
         private static string FrameType(string frame)
         {
             string f = frame.Trim();
@@ -347,7 +365,11 @@ namespace ValPerfMonitor
             if (f.StartsWith("(wrapper")) return null;
             int paren = f.IndexOf(" (", StringComparison.Ordinal);
             if (paren < 0) paren = f.IndexOf('(');
-            if (paren > 0) f = f.Substring(0, paren);
+            if (paren <= 0) return null;
+            f = f.Substring(0, paren);
+            foreach (char ch in f)
+                if (!(char.IsLetterOrDigit(ch) || ch == '_' || ch == '.' || ch == ':' || ch == '+' || ch == '/' || ch == '<' || ch == '>' || ch == '`' || ch == '$' || ch == '|' || ch == '[' || ch == ']' || ch == ','))
+                    return null;
             int colon = f.IndexOf(':');
             int dot = colon >= 0 ? colon : f.LastIndexOf('.');
             if (dot <= 0) return null;

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.1
+
+- **Fix: possible hitch when working out which mod an error belongs to.** Every line under an error or warning was looked up as if it were a line of a stack trace, including plain text (such as the monitor's own report on the last session). Each such line made the lookup search every type of every loaded mod, 0.1-0.3 s on the main thread the first time it was seen, and logged "AccessTools.TypeByName: Could not find type named ...". Now only real stack-trace lines are looked up, with a quick lookup in each loaded assembly, and the monitor's own messages are filed under the monitor.
+
 ## 1.3.0
 
 - **Log flood warning**: when one message is written more than 20 times in one second (setting "Log flood: lines per second"), a warning appears in the log (and on screen once you are in a world), naming the mod and the message. Before, a mod repeating an error every frame (for example 55,000 "Failed to allocate NavMeshLink" errors in one session) was only noticed afterwards in an 11 MB log. Floods are listed in `perf/log_errors`.
