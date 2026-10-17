@@ -243,12 +243,12 @@ namespace ValPerfMonitor
             };
         }
 
-        [BridgeTool("perf/ab_test", "Find out if a mod, one of its methods, or an object really costs frame time: take the mod's Harmony patches off (mod, optionally only those on patchesOn = Type:Method), skip one mod method (skip = Namespace.Type:Method), or switch off an object with its children (objectId from debug/find_objects, objectPath as debug/scene_tree shows it, or prefab = every loaded copy, names as in perf/objects), and put it back, in turns, measuring each turn with no probes. Stand still; read the result with perf/ab_result")]
-        private static object AbTestTool(string mod = "", string patchesOn = "", string skip = "", int objectId = 0, string objectPath = "", string prefab = "", float seconds = 20f, int rounds = 3, string label = "")
+        [BridgeTool("perf/ab_test", "Find out if a mod, one of its methods, or an object really costs frame time: take the mod's Harmony patches off (mod, optionally only those on patchesOn = Type:Method), skip one mod method (skip = Namespace.Type:Method), or switch off an object with its children (objectId from debug/find_objects, objectPath as debug/scene_tree shows it, or prefab = every loaded copy, names as in perf/objects), and put it back, in turns, measuring each turn with no probes. Stand still, or give script = a ValAgentBridge test script (a saved name as test/run_file takes it, or the script as JSON) that is run over and over in every turn (open the inventory, the map, place pieces...; it must leave things as it found them), so the cost is measured while doing something. Read the result with perf/ab_result")]
+        private static object AbTestTool(string mod = "", string patchesOn = "", string skip = "", int objectId = 0, string objectPath = "", string prefab = "", float seconds = 20f, int rounds = 3, string label = "", string script = "")
         {
             var p = P;
             if (p == null) return new { success = false, error = "monitor not started" };
-            var t = p.StartAb(mod, patchesOn, skip, seconds, rounds, label, objectId, objectPath, prefab);
+            var t = p.StartAb(mod, patchesOn, skip, seconds, rounds, label, objectId, objectPath, prefab, script);
             if (t.Error != null) return new { success = false, error = t.Error };
             return new
             {
@@ -274,7 +274,9 @@ namespace ValPerfMonitor
                     cpuMainMs = double.IsNaN(x.CpuMainMs) ? (double?)null : Math.Round(x.CpuMainMs, 3),
                     frameMs = Math.Round(x.FrameMs, 3),
                     garbageKbPerFrame = double.IsNaN(x.GarbageKbPerFrame) ? (double?)null : Math.Round(x.GarbageKbPerFrame, 2), fps1Low = Math.Round(x.Fps1Low, 1), gcPerMin = Math.Round(x.GcPerMin, 1), slowFramesPerMin = Math.Round(x.SlowPerMin, 1),
+                    scriptRuns = t.Script == null ? (int?)null : x.ScriptRuns,
                 }).ToList(),
+                script = t.Script == null ? null : new { spec = t.Script.Spec.Length > 200 ? t.Script.Spec.Substring(0, 200) + "..." : t.Script.Spec, runs = t.Script.Runs, failed = t.Script.Failed, lastFailure = t.Script.LastFailure },
                 verdict = t.Verdict, details = t.VerdictLines,
             };
         }
@@ -344,6 +346,83 @@ namespace ValPerfMonitor
                 }).ToList(),
                 floodNote = $"A flood = one message written more than {LogWatch.FloodThreshold} times in one second. logWriteMsPerMinute = main-thread time BepInEx spent writing log lines (Unity's own cost of building errors comes on top).",
                 file = System.IO.Path.Combine(p.SessionFolder, "log_errors.csv"),
+            };
+        }
+
+        [BridgeTool("perf/relog_test", "Start a relog test here (in a world): this is cycle 0. Then log out and back in a few times (world/logout + world/enter, or examples/relog-test.json); after each login, once the world has settled (settleSeconds), a cycle is recorded: error counts, game objects, materials and (census = true) a memory census. Before logging out again, wait until perf/relog_result says busy = false. Read the result with perf/relog_result")]
+        private static object RelogTestTool(bool census = true, int settleSeconds = 10)
+        {
+            var p = P;
+            if (p == null) return new { success = false, error = "monitor not started" };
+            Busy(p, refuse: false);
+            if (!p.WorldReady) return new { success = false, error = "not in a world yet (or the world is still loading)" };
+            if (p.TestRunning != null) return new { success = false, error = $"{p.TestRunning} is running; stop it first (perf/stop)" };
+            RelogTest.Running = new RelogTest(census, settleSeconds);
+            return new { success = true, census, settleSeconds = RelogTest.Running.SettleSeconds, note = "cycle 0 is recorded now; wait for perf/relog_result busy = false, then log out and back in, wait again, and so on. Two relogs or more are needed to see what grows every cycle." };
+        }
+
+        [BridgeTool("perf/relog_result", "Result of the relog test: busy (true = a cycle is being recorded; don't log out yet), each cycle (game objects, materials, live memory, full GC ms), errors and warnings that first appeared after the first logout with their count per cycle, and static fields, component types and Unity objects that grew in every cycle (the signs of state a mod keeps across logouts)")]
+        private static object RelogResult(int count = 15)
+        {
+            var p = P;
+            var t = RelogTest.Running;
+            if (p == null || t == null) return new { success = false, error = "no relog test this session (perf/relog_test)" };
+            int n = Math.Max(1, count);
+            var statics = t.GrowingEveryCycle(unity: false);
+            var unity = t.GrowingEveryCycle(unity: true);
+            return new
+            {
+                success = true, busy = t.Busy, status = t.Status, logouts = t.Logouts,
+                cycles = t.Cycles.Select(c => new
+                {
+                    c.Number, sessionSeconds = Math.Round(c.SessionSeconds, 0), objectsLoaded = c.ObjectsLoaded, gameObjects = c.GameObjects, materials = c.Materials,
+                    liveMbAfterGc = Round(c.MonoUsedMb), fullGcMs = Round(c.GcMs), censusObjects = c.CensusObjects < 0 ? (long?)null : c.CensusObjects, recorded = c.Done,
+                }).ToList(),
+                newErrorsAfterRelog = t.NewErrors(p.Registry).Take(n).Select(x => new
+                {
+                    x.mod, logName = x.entry.Source, x.entry.Level, message = x.entry.Message, total = x.entry.Count, perCycle = x.perCycle, x.whenFirst,
+                    stack = x.entry.Stack.Length == 0 ? null : x.entry.Stack.Split('\n').Take(5).ToList(),
+                }).ToList(),
+                staticsGrowingEveryCycle = statics.Take(n).Select(x => { var (o, r) = MemoryCensus.SplitKey(x.name); return new { owner = o, root = r, objectsPerCycle = x.counts }; }).ToList(),
+                unityGrowingEveryCycle = unity.Take(n).Select(x => new { what = x.name, perCycle = x.counts }).ToList(),
+                summary = RelogSummary(t, statics),
+                note = "perCycle: how many times each message was logged from that cycle's login to the next (the last one up to now). whenFirst 'while playing' is the interesting kind; 'during logout or loading' is often normal. Growth needs cycle 0 and at least two relogs with a census.",
+            };
+        }
+
+        private static System.Collections.Generic.List<string> RelogSummary(RelogTest t, System.Collections.Generic.List<(string name, System.Collections.Generic.List<long> counts)> statics)
+        {
+            var l = new System.Collections.Generic.List<string>();
+            var done = t.Cycles.Where(c => !double.IsNaN(c.MonoUsedMb)).ToList();
+            if (done.Count >= 2)
+            {
+                double per = (done[done.Count - 1].MonoUsedMb - done[0].MonoUsedMb) / (done[done.Count - 1].Number - done[0].Number);
+                l.Add($"Live memory after a full clean-up: {string.Join(" -> ", done.Select(c => c.MonoUsedMb.ToString("0", Csv.Inv)).ToArray())} MB ({(per >= 0 ? "+" : "")}{per.ToString("0", Csv.Inv)} MB per relog); full garbage collection {string.Join(" -> ", done.Select(c => c.GcMs.ToString("0", Csv.Inv)).ToArray())} ms.");
+            }
+            foreach (var s in statics.Take(5))
+            {
+                var (o, r) = MemoryCensus.SplitKey(s.name);
+                l.Add($"{o}: {r} grew every relog ({string.Join(" -> ", s.counts.Select(x => x.ToString("N0", Csv.Inv)).ToArray())} objects).");
+            }
+            return l;
+        }
+
+        [BridgeTool("perf/first_opens", "First-open stutter: for the inventory, the map, the build menu, crafting stations and containers, the frame time of the first open this session against later opens (median), and the time of the opening code itself (game plus mod patches). Also opens that were slow again as the first after a relog")]
+        private static object FirstOpensTool()
+        {
+            if (!FirstOpens.Active) return new { success = false, error = "first-open timing is not active (see the log)" };
+            return new
+            {
+                success = true,
+                windows = FirstOpens.Rows().Select(r => new
+                {
+                    window = r.Kind, opens = r.Count,
+                    firstFrameMs = Math.Round(r.First.FrameMs, 1), firstCallMs = Math.Round(r.First.CallMs, 1),
+                    laterMedianFrameMs = Round(r.LaterMedianFrameMs), laterMedianCallMs = Round(r.LaterMedianCallMs),
+                    firstAtSessionSeconds = Math.Round(r.First.SessionSeconds, 0),
+                }).ToList(),
+                firstAfterRelog = FirstOpens.FirstAfterRelog().Select(o => new { window = o.Kind, frameMs = Math.Round(o.FrameMs, 1), callMs = Math.Round(o.CallMs, 1), sessionSeconds = Math.Round(o.SessionSeconds, 0) }).ToList(),
+                note = "frameMs = the slowest of the frame the window opened in and the two after; callMs = the opening method itself, including mod patches on it. A first open far slower than later ones is a one-off load (icons, lists) that could be done earlier. Every open: first_opens.csv in the session folder.",
             };
         }
 

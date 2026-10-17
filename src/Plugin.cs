@@ -196,6 +196,7 @@ namespace ValPerfMonitor
             Net = new NetworkStats(Registry, Logger);
             Memory = new MemoryTracker(Registry);
             Alarms = new Alarms(this);
+            FirstOpens.Attach(Guid + ".firstopens", Logger);
             Instrumenter.Calibrate();
             double probeBytes = Instrumenter.ChildOverhead[(int)CaptureMode.Allocations];
             if (AllocCounter.Exact && probeBytes > 8)
@@ -245,6 +246,7 @@ namespace ValPerfMonitor
                 bool monitorBusy = _heavy || WarmingUp || monitorMs > CfgMonitorExcludeMs.Value;
                 // Frames in which ValAgentBridge ran a command are test tooling, not play: left out, like the monitor's own work.
                 bool bridge = Events.TakeBridgeFrame(out string bridgeName);
+                if (Ab != null && Ab.Script != null) bridge = false; // the A/B test's own action script: those frames are what it measures
                 if (bridge && Current != null && Probe.Recording && frameStart != 0) Current.LeftOutForBridge(bridgeName, rawMs);
                 int objects = GameContext.LoadedObjects();
                 int objectsChanged = objects >= 0 && _lastObjects >= 0 ? Math.Abs(objects - _lastObjects) : 0;
@@ -277,6 +279,7 @@ namespace ValPerfMonitor
                         list[list.Count - 1] = last;
                     }
                 }
+                FirstOpens.Frame(rawMs);
                 if (Current != null && Current.Mode == CaptureMode.Allocations)
                     GarbageConfidence.Frame(_lastFrameCounted && !gc, rawMs);
                 Ab?.Frame(_lastFrameCounted && !gc);
@@ -365,6 +368,7 @@ namespace ValPerfMonitor
 
             float now = Time.realtimeSinceStartup;
             Alarms.Tick();
+            RelogTest.Running?.Tick(this, inWorld);
             if (now >= _nextRescanCheck)
             {
                 if (!_bridgeWatched) _bridgeWatched = Events.WatchBridge(new Harmony(Guid + ".events"), Logger);
@@ -832,10 +836,16 @@ namespace ValPerfMonitor
         // ---- A/B test ---------------------------------------------------------------------------
 
         /// <summary>Start an A/B test (see AbTest). Returns it; check Error.</summary>
-        internal AbTest StartAb(string mod, string patchesOn, string skip, float seconds, int rounds, string label, int objectId = 0, string objectPath = "", string prefab = "")
+        internal AbTest StartAb(string mod, string patchesOn, string skip, float seconds, int rounds, string label, int objectId = 0, string objectPath = "", string prefab = "", string script = "")
         {
             var t = new AbTest(mod, patchesOn, skip, objectId, objectPath, prefab, seconds, rounds, label, Registry, Guid + ".abtest", RootFolder, Logger);
             if (t.Error != null) return t;
+            if (!string.IsNullOrWhiteSpace(script))
+            {
+                string why = BridgeScript.Check();
+                if (why != null) { t.Error = "can't run the action script: " + why; return t; }
+                t.Script = new BridgeScript(script);
+            }
             if (!WorldReady) { t.Error = "not in a world yet (or the world is still loading)"; return t; }
             AbortAb();
             Suite = null;
@@ -898,6 +908,7 @@ namespace ValPerfMonitor
         private void MemoryCensusFinished(MemoryCensus mc)
         {
             MemoryCensus.Running = null;
+            RelogTest.Running?.CensusFinished(mc);
             if (mc.Error != null) { Logger.LogWarning("Memory census: " + mc.Error); return; }
             string file = Path.Combine(SessionFolder, "memory_census_" + DateTime.Now.ToString("HH-mm-ss", Csv.Inv) + ".txt");
             mc.File = file;
@@ -948,7 +959,7 @@ namespace ValPerfMonitor
             Ab = null;
             FinishCapture();
             GoIdle();
-            Logger.LogInfo($"A/B test finished: {t.What}");
+            Logger.LogInfo($"A/B test finished: {t.What}{(t.Script != null ? $" (with the action script {(t.Script.Spec.StartsWith("{") ? "given inline" : t.Script.Spec)}, {string.Join("/", t.Phases.Select(ph => ph.ScriptRuns.ToString(Csv.Inv)).ToArray())} runs per turn)" : "")}");
             foreach (var ph in t.Phases)
                 Logger.LogInfo($"  turn {(ph.On ? "normal" : "off   ")}: main-thread CPU {ph.CpuMainMs:0.000} ms, frame {ph.FrameMs:0.00} ms, garbage {ph.GarbageKbPerFrame:0.0} KB/frame, 1% low {ph.Fps1Low:0.0} FPS, {ph.GcPerMin:0.0} GC/min, {ph.SlowPerMin:0.0} slow frames/min; weather {ph.WeatherText}, moved {ph.MovedM:0} m, {ph.ObjectsMin}-{ph.ObjectsMax} objects loaded");
             foreach (var line in t.VerdictLines) Logger.LogInfo("  " + line);

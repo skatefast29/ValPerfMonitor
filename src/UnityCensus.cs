@@ -21,6 +21,8 @@ namespace ValPerfMonitor
         public List<(string name, int count)> RootGrowth, MaterialGrowth, SceneGrowth;
         public bool HasPrevious;
         private Dictionary<string, int> _roots, _materials, _scenes;
+        /// <summary>All game objects per "scene: root" and all materials per name (kept for the relog test).</summary>
+        public Dictionary<string, int> RootCounts = new Dictionary<string, int>(), MaterialCounts = new Dictionary<string, int>();
         private static UnityCensus _previous;
 
         /// <summary>Runs in slices: yields whenever <paramref name="outOfTime"/> says the frame's budget is used.</summary>
@@ -63,7 +65,7 @@ namespace ValPerfMonitor
             ByScene = Top(scenes, 20);
             ByRoot = Top(roots, 40);
             ByMaterial = Top(byName, 40);
-            _scenes = scenes; _roots = roots; _materials = byName;
+            _scenes = scenes; _roots = RootCounts = roots; _materials = MaterialCounts = byName;
             if (_previous != null)
             {
                 HasPrevious = true;

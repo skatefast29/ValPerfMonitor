@@ -42,6 +42,7 @@ namespace ValPerfMonitor
             public float MovedM;
             public int ObjectsMin = -1, ObjectsMax = -1;
             public bool HasPos;
+            public int ScriptRuns;
             public UnityEngine.Vector3 StartPos;
             public string WeatherText => Weathers.Count == 0 ? "?" : string.Join(" -> ", Weathers);
         }
@@ -60,6 +61,9 @@ namespace ValPerfMonitor
         public readonly List<string> VerdictLines = new List<string>();
         public bool Done;
         public int Step = -1;
+        /// <summary>A ValAgentBridge test script run over and over during every turn (actions instead of standing still), or null.</summary>
+        public BridgeScript Script;
+        private int _runsAtTurnStart;
         public int RoundsUsed, RoundsLeftOut;
         private readonly int _requestedRounds;
         // Per-turn condition tracking (sampled every few frames; reads only, no allocations).
@@ -326,7 +330,8 @@ namespace ValPerfMonitor
 
         // ---- Running ----------------------------------------------------------------------------
 
-        public string Status => Done ? "A/B test finished" : $"A/B test {What}: turn {Step + 1}/{Plan.Count} ({(Plan[Math.Max(0, Step)] ? "normal" : "taken off")})";
+        public string Status => Done ? "A/B test finished" : $"A/B test {What}: turn {Step + 1}/{Plan.Count} ({(Plan[Math.Max(0, Step)] ? "normal" : "taken off")})" +
+                                (Script == null ? "" : $", action script run {Script.Runs - _runsAtTurnStart}{(Script.Running ? " running" : "")}");
 
         public void Begin(Plugin p)
         {
@@ -382,7 +387,28 @@ namespace ValPerfMonitor
         public void Tick(Plugin p)
         {
             var c = p.Current;
-            if (Done || c == null || c.MeasuredSeconds < Seconds)
+            if (Done || c == null)
+                return;
+            if (Script != null)
+            {
+                // With a script: each turn runs it whole, as many times as fit, and ends after a finished run once the
+                // turn's seconds are counted. Runs start after the turn's settle time, so every turn sees whole runs.
+                Script.Collect();
+                if (Script.Failed > 0 || Script.Error != null)
+                {
+                    _log.LogWarning($"A/B test: the action script {(Script.Error != null ? "could not start: " + Script.Error : "failed: " + Script.LastFailure)}. Stopping the test.");
+                    p.StopTest();
+                    return;
+                }
+                if (Script.Running) return;
+                if (c.MeasuredSeconds < Seconds || Script.Runs == _runsAtTurnStart)
+                {
+                    if (!p.WarmingUp) Script.Start();
+                    return;
+                }
+                _turn.ScriptRuns = Script.Runs - _runsAtTurnStart;
+            }
+            else if (c.MeasuredSeconds < Seconds)
                 return;
             RecordPhase(p, c);
             if (Step + 1 == Plan.Count && Plan.Count / 2 < MaxRounds && _requestedRounds >= 2)
@@ -470,6 +496,7 @@ namespace ValPerfMonitor
             _cpuFrames = 0;
             _turn = new Phase();
             _sampleCountdown = 0;
+            _runsAtTurnStart = Script?.Runs ?? 0;
             p.StartCapture(CaptureMode.Baseline, $"{Label} {(on ? "normal" : "off")} {step + 1}");
             if (p.Current != null) p.Current.AbTurn = true;
         }

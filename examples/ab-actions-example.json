@@ -1,0 +1,15 @@
+{
+ "name": "ab-actions-example",
+ "screenshotOnFail": false,
+ "steps": [
+  { "note": "Actions for an A/B test while doing something: perf/ab_test with script = \"ab-actions-example\" runs this over and over in every turn. Put it in BepInEx\\ValAgentBridge\\tests. It opens and closes the inventory and the map and leaves everything as it was, so every run is the same." },
+  { "call": "input/press_key", "args": { "key": "Tab" } },
+  { "wait": 1.5 },
+  { "call": "input/press_key", "args": { "key": "Tab" } },
+  { "wait": 1 },
+  { "call": "input/press_key", "args": { "key": "M" } },
+  { "wait": 1.5 },
+  { "call": "input/press_key", "args": { "key": "M" } },
+  { "wait": 1 }
+ ]
+}

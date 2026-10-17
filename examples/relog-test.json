@@ -1,0 +1,28 @@
+{
+ "name": "relog-test",
+ "screenshotOnFail": true,
+ "steps": [
+  { "note": "Relog test for ValPerfMonitor: logs out and back in 3 times and records each cycle. Start it in a world with a throwaway character. Read the answer with perf/relog_result (errors that start only after a relog, what grows every cycle)." },
+  { "waitUntil": "in_world", "timeout": 300 },
+  { "waitUntil": { "call": "perf/status" }, "until": [ { "path": "worldReady", "equals": true } ], "timeout": 120, "every": 2 },
+  { "call": "perf/relog_test", "args": { "census": true, "settleSeconds": 10 } },
+  { "waitUntil": { "call": "perf/relog_result" }, "until": [ { "path": "busy", "equals": false } ], "timeout": 240, "every": 3 },
+
+  { "call": "world/logout" },
+  { "waitUntil": "main_menu", "timeout": 120 },
+  { "call": "world/enter" },
+  { "waitUntil": { "call": "perf/relog_result" }, "until": [ { "path": "busy", "equals": false } ], "timeout": 240, "every": 3 },
+
+  { "call": "world/logout" },
+  { "waitUntil": "main_menu", "timeout": 120 },
+  { "call": "world/enter" },
+  { "waitUntil": { "call": "perf/relog_result" }, "until": [ { "path": "busy", "equals": false } ], "timeout": 240, "every": 3 },
+
+  { "call": "world/logout" },
+  { "waitUntil": "main_menu", "timeout": 120 },
+  { "call": "world/enter" },
+  { "waitUntil": { "call": "perf/relog_result" }, "until": [ { "path": "busy", "equals": false } ], "timeout": 240, "every": 3 },
+
+  { "call": "perf/relog_result" }
+ ]
+}

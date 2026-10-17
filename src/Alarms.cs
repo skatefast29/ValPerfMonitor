@@ -153,6 +153,7 @@ namespace ValPerfMonitor
             {
                 _inWorld = inWorld;
                 Mark(inWorld ? "login" : "logout", inWorld ? "entered the world" : "left the world (logout or death)");
+                if (inWorld) FirstOpens.OnLogin();
             }
             bool tp = false;
             try { tp = inWorld && player.IsTeleporting(); } catch { }

@@ -57,6 +57,9 @@ namespace ValPerfMonitor
             TimeLogWrites();
         }
 
+        private static readonly System.Text.RegularExpressions.Regex Stamp =
+            new System.Text.RegularExpressions.Regex(@"^\d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2}:\d{2}: ", System.Text.RegularExpressions.RegexOptions.Compiled);
+
         public int Errors { get { lock (_lock) return _errors; } }
         public int Warnings { get { lock (_lock) return _warnings; } }
 
@@ -68,6 +71,13 @@ namespace ValPerfMonitor
             {
                 string source = e.Source?.SourceName ?? "?";
                 string text = e.Data as string ?? e.Data?.ToString() ?? "";
+                // The game stamps its own lines with the time ("10/16/2026 16:03:37: Local player destroyed"): without
+                // it, repeats of one message count as one message.
+                if (text.Length > 21 && text[0] >= '0' && text[0] <= '9')
+                {
+                    var m = Stamp.Match(text);
+                    if (m.Success) text = text.Substring(m.Length);
+                }
                 int nl = text.IndexOf('\n');
                 CountFlood(source, text, nl, error ? "error" : warning ? "warning" : "info");
                 if (!error && !warning) return;
@@ -242,6 +252,11 @@ namespace ValPerfMonitor
         }
 
         public int Dropped { get { lock (_lock) return _dropped; } }
+
+        public List<Entry> Entries() { lock (_lock) return _messages.Values.ToList(); }
+
+        /// <summary>The key an entry is counted under (as in Snapshot).</summary>
+        public static string Key(Entry e) => e.Source + "|" + e.Level + "|" + e.Message;
 
         /// <summary>Errors and warnings per mod (since a snapshot, or the whole session), most errors first.</summary>
         public List<ModRow> ByMod(ModRegistry registry, Dictionary<string, int> since = null)

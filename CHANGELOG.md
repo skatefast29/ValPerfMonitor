@@ -10,6 +10,9 @@
 - **Events**: teleports and portals, entering and leaving a world, season changes (Seasonality) and ValAgentBridge commands are kept in `events.csv`, listed per 10 s in `frames.csv`, and named on slow frames up to 3 s after them ("after season change to Winter (0.4 s)").
 - **Test tooling left out**: frames in which ValAgentBridge ran a command are left out of captures, like the monitor's own work. Each capture's log summary lists them per command with the slowest frame.
 - `perf/alarms` (new): pathfinding counts, the latest memory sample, log floods and recent events.
+- **Relog test** (`perf/relog_test` / `perf/relog_result`, script `examples/relog-test.json`): log out and back in a few times; after each login the monitor records a cycle (error counts, game objects, materials and a memory census). The result lists errors that first appeared after a relog, with how many in each cycle, and static fields, component types and Unity objects that grew in every cycle: the signs of a mod keeping old data across logouts.
+- **A/B test while doing something**: `perf/ab_test` takes `script`, a ValAgentBridge test script run over and over in every turn (open the inventory and the map, place pieces...), instead of only standing still. Frames of that script are counted; `examples/ab-actions-example.json` is a start.
+- **First-open stutter** (`perf/first_opens`, `first_opens.csv`): every opening of the inventory, the map, the build menu, a crafting station or a container is timed (the frame it opened in and the two after, and the opening code itself), so the first open of the session can be compared with later ones, and with the first open after a relog. A slow first open (50 ms or more) is noted in the log.
 
 ## 1.2.0
 
