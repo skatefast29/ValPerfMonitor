@@ -69,7 +69,11 @@ namespace ValPerfMonitor
             else
             {
                 string text = Describe(t.Result);
-                if (Regex.IsMatch(text, "\"(passed|success)\"\\s*:\\s*false", RegexOptions.IgnoreCase))
+                // A script's own verdict is its top-level "passed" (steps allowed to fail have "success": false inside);
+                // "success": false only counts when there is no "passed" (the script could not run at all).
+                bool hasPassed = Regex.IsMatch(text, "\"passed\"\\s*:", RegexOptions.IgnoreCase);
+                if (hasPassed ? Regex.IsMatch(text, "\"passed\"\\s*:\\s*false", RegexOptions.IgnoreCase)
+                              : Regex.IsMatch(text, "\"success\"\\s*:\\s*false", RegexOptions.IgnoreCase))
                 {
                     var m = Regex.Match(text, "\"error\"\\s*:\\s*\"([^\"]{0,200})");
                     why = m.Success ? m.Groups[1].Value : "a step failed (see the bridge's test-results folder)";

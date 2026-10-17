@@ -44,9 +44,14 @@ namespace ValPerfMonitor
         private bool _wasInWorld = true;
         public string Status = "";
 
-        public RelogTest(bool census, int settleSeconds)
+        /// <summary>Relogs to record after cycle 0; then the test is finished and later logins are left alone.</summary>
+        public readonly int Relogs;
+        public bool Finished => Cycles.Count > Relogs && Cycles[Cycles.Count - 1].Done;
+
+        public RelogTest(bool census, int settleSeconds, int relogs)
         {
             Census = census;
+            Relogs = Math.Max(1, Math.Min(20, relogs));
             SettleSeconds = Math.Max(3, settleSeconds);
             _waiting = new Cycle { Number = 0 };
             _inWorldSince = Time.realtimeSinceStartup - SettleSeconds; // already settled: record cycle 0 now
@@ -58,6 +63,8 @@ namespace ValPerfMonitor
         /// <summary>Every frame (Plugin.Tick).</summary>
         public void Tick(Plugin p, bool inWorld)
         {
+            // Finished: no more cycles (each would run a census, a few seconds of stutter, on every later login).
+            if (Finished) { Status = $"finished: cycle 0 and {Relogs} relog(s) recorded"; return; }
             float now = Time.realtimeSinceStartup;
             if (inWorld != _wasInWorld)
             {
@@ -133,7 +140,7 @@ namespace ValPerfMonitor
             var w = LogWatch.Instance;
             if (w == null || double.IsNaN(FirstLogoutAt)) return l;
             var now = w.Snapshot();
-            foreach (var e in w.Entries().Where(e => e.FirstSeen >= FirstLogoutAt))
+            foreach (var e in w.Entries().Where(e => e.FirstSeen >= FirstLogoutAt && !e.Source.StartsWith(Plugin.Name, StringComparison.Ordinal)))
             {
                 string key = LogWatch.Key(e);
                 var per = new List<int>();

@@ -87,6 +87,8 @@ namespace ValPerfMonitor
                                     (Loads == null || !Loads.WorldLoading || Time.realtimeSinceStartup - _worldSince >= 30f);
         internal float WorldReadyIn => _worldSince < 0 ? -1 : Mathf.Max(0, WorldSettleSeconds - (Time.realtimeSinceStartup - _worldSince));
         private float WorldSettleSeconds => Mathf.Max(0f, CfgWorldSettle?.Value ?? 5f);
+        /// <summary>Seconds since the player entered the current world; -1 when not in one.</summary>
+        internal float WorldSeconds => _worldSince < 0 ? -1 : Time.realtimeSinceStartup - _worldSince;
         internal float WarmupLeft => Mathf.Max(0, _warmupUntil - Time.realtimeSinceStartup);
         internal double SessionSeconds => Time.realtimeSinceStartup - _sessionStart;
 
@@ -238,6 +240,8 @@ namespace ValPerfMonitor
                 _lastBoundary = t0;
                 int gcNow = GC.CollectionCount(0);
                 bool gc = gcNow != _lastGcCount;
+                // Not during a memory census: its own bookkeeping (millions of entries) is alive during the collections it causes.
+                if (MemoryCensus.Running == null) Alarms?.FrameMemory(gc);
                 _lastGcCount = gcNow;
 
                 _lastFrameCounted = false;
@@ -549,6 +553,15 @@ namespace ValPerfMonitor
             Suite = null;
             StartCapture(mode, CfgLabel.Value);
             if (Current != null) ShowToast($"Recording {Current.Mode} until you stop it (F11 → Stop).");
+        }
+
+        /// <summary>A recording with its own label (perf/start_capture), until stopped. The "Run label" setting is left alone.</summary>
+        internal void StartLabelled(CaptureMode mode, string label)
+        {
+            AbortAb();
+            Suite = null;
+            StartCapture(mode, label);
+            if (Current != null) ShowToast($"Recording {Current.Mode}{(Current.Label.Length > 0 ? " (" + Current.Label + ")" : "")} until it is stopped.", 4f);
         }
 
         /// <summary>A timed test: the full suite, or one mode for a fixed time. Ends idle with results saved.</summary>

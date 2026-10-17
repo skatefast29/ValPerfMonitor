@@ -77,11 +77,14 @@ namespace ValPerfMonitor
         [ThreadStatic] private static int _callDepth;
         private static Func<bool> _queueEmpty;
         private static bool _bridgeFrame;
+        // ValAgentBridge 1.8.0+: MainThreadDispatcher.LastWorkFrame, the last Time.frameCount in which it ran tool work.
+        private static AccessTools.FieldRef<int> _lastWorkFrame;
         private static string _lastBridge = "";
 
         /// <summary>
         /// Notices ValAgentBridge commands without referencing it: the tool name from Lib.GAB's ToolRegistry.CallToolAsync
-        /// (network thread), and the frame the work runs in from MainThreadDispatcher.Update finding its queue non-empty.
+        /// (network thread), and the frame the work runs in: from the bridge's own record (MainThreadDispatcher.LastWorkFrame,
+        /// 1.8.0 and later), or for older bridges from MainThreadDispatcher.Update finding its queue non-empty.
         /// Stands down with a log line if either is not as expected.
         /// </summary>
         /// <returns>false while the bridge's assemblies are not loaded yet (call again later).</returns>
@@ -93,6 +96,13 @@ namespace ValPerfMonitor
             try
             {
                 var call = AccessTools.Method(registry, "CallToolAsync", new[] { typeof(string), typeof(object) });
+                var workFrame = AccessTools.Field(dispatcher, "LastWorkFrame");
+                if (call != null && workFrame != null && workFrame.IsStatic && workFrame.FieldType == typeof(int))
+                {
+                    _lastWorkFrame = AccessTools.StaticFieldRefAccess<int>(workFrame);
+                    harmony.Patch(call, prefix: new HarmonyMethod(typeof(Events), nameof(CallPrefix)), finalizer: new HarmonyMethod(typeof(Events), nameof(CallFinalizer)));
+                    return true;
+                }
                 var update = AccessTools.Method(dispatcher, "Update");
                 var queueField = AccessTools.Field(dispatcher, "ExecutionQueue");
                 var queue = queueField != null && queueField.IsStatic ? queueField.GetValue(null) as ConcurrentQueue<Action> : null;
@@ -132,6 +142,11 @@ namespace ValPerfMonitor
                 Mark("bridge", n);
             }
             name = _lastBridge;
+            if (_lastWorkFrame != null)
+            {
+                try { return _lastWorkFrame() == Time.frameCount; }
+                catch { _lastWorkFrame = null; return false; }
+            }
             bool b = _bridgeFrame;
             _bridgeFrame = false;
             return b;
@@ -226,7 +241,9 @@ namespace ValPerfMonitor
                 _p.Log.LogWarning($"Log flood: {mod} wrote the same {f.Level} {f.PeakPerSecond} times in one second{again}: \"{Short(f.Message, 140)}\".{cost} " +
                                      $"A message repeated this often costs frame time and fills the log. Details: perf/log_errors.");
                 if (f.Message.IndexOf("NavMeshLink", StringComparison.Ordinal) >= 0) _nextPath = 0; // check the links right away
-                _p.ShowToast($"Log flood: {mod} repeats \"{Short(f.Message, 60)}\" {f.PeakPerSecond}x per second.", 12f);
+                // On screen only in a world: floods while loading (Unity's shader warnings at every launch) are logged, not shown.
+                if (Player.m_localPlayer != null)
+                    _p.ShowToast($"Log flood: {mod} repeats \"{Short(f.Message, 60)}\" {f.PeakPerSecond}x per second.", 12f);
             }
         }
 
@@ -306,13 +323,43 @@ namespace ValPerfMonitor
 
         // ---- Hidden objects piling up ----------------------------------------------------------------
 
-        private float _lastGoWarn = -1e9f, _lastMatWarn = -1e9f;
+        private float _lastGoWarn = -1e9f, _lastMatWarn = -1e9f, _lastLiveWarn = -1e9f;
+        private double _liveWarnedAt;
+
+        /// <summary>
+        /// Managed memory at its lowest point after the latest garbage collection (MB). The game doesn't clear everything in
+        /// one go, so this still holds some garbage (a few hundred MB more than a forced full clean-up shows), but it moves
+        /// with what is really kept. NaN before the first collection.
+        /// </summary>
+        public double LiveAfterGcMb = double.NaN;
+
+        private int _gcWindow;
+        private long _minUsed;
+
+        /// <summary>
+        /// Every frame from the frame loop (gc = a garbage collection finished in it). The game frees memory over several
+        /// frames after a collection, so the lowest reading over the next 60 frames is taken.
+        /// One cheap native call per frame, only in those 60 frames.
+        /// </summary>
+        public void FrameMemory(bool gc)
+        {
+            if (gc) { _gcWindow = 60; _minUsed = long.MaxValue; }
+            if (_gcWindow <= 0) return;
+            try
+            {
+                long used = UnityEngine.Profiling.Profiler.GetMonoUsedSizeLong();
+                if (used > 0 && used < _minUsed) _minUsed = used;
+            }
+            catch { _gcWindow = 0; return; }
+            if (--_gcWindow == 0 && _minUsed != long.MaxValue) LiveAfterGcMb = _minUsed / 1048576.0;
+        }
         private int _goWarnedAt, _matWarnedAt;
 
         /// <summary>
         /// After each memory sample: compares with the earliest in-world sample this session that had about the same
-        /// number of loaded objects (within 15%). Same world size but many more game objects or materials = something
-        /// creates them and never destroys them.
+        /// number of loaded objects (within 15%). Same world size but many more game objects, materials or managed memory
+        /// (measured just after a garbage collection, so garbage doesn't count) = something creates them and never
+        /// lets them go. A relog test showed mods keeping ~300 MB more after every logout and login.
         /// </summary>
         public void CheckLeak(MemoryTracker.Sample s, List<MemoryTracker.Sample> all)
         {
@@ -334,6 +381,21 @@ namespace ValPerfMonitor
                 _lastMatWarn = now; _matWarnedAt = s.Materials;
                 Warn($"Materials: {refSample.Materials:N0} -> {s.Materials:N0} in {mins} min, while loaded world objects stayed about the same ({refSample.Instances:N0} -> {s.Instances:N0}).",
                      $"Materials piling up: {refSample.Materials:N0} -> {s.Materials:N0}.");
+            }
+            // Only moments at least 30 s after entering the world: right after loading in, the world is still filling memory.
+            var liveRef = all.FirstOrDefault(x => x != s && x.InWorld && x.Instances > 0 && Math.Abs(x.Instances - s.Instances) <= 0.15 * s.Instances
+                                                  && !double.IsNaN(x.LiveAfterGcMb) && x.WorldSeconds >= 30);
+            if (liveRef != null && !double.IsNaN(s.LiveAfterGcMb) && s.WorldSeconds >= 30)
+            {
+                double grew = s.LiveAfterGcMb - liveRef.LiveAfterGcMb;
+                // A high bar: the reading still includes some garbage, which comes and goes.
+                if (grew > 500 && grew > 0.4 * liveRef.LiveAfterGcMb && (now - _lastLiveWarn > 1800 || s.LiveAfterGcMb > _liveWarnedAt * 1.2))
+                {
+                    _lastLiveWarn = now; _liveWarnedAt = s.LiveAfterGcMb;
+                    string lmins = ((s.SessionSeconds - liveRef.SessionSeconds) / 60).ToString("0", Csv.Inv);
+                    Warn($"Mod and game memory (lowest point after garbage collection): {liveRef.LiveAfterGcMb:0} -> {s.LiveAfterGcMb:0} MB in {lmins} min, while loaded world objects stayed about the same ({liveRef.Instances:N0} -> {s.Instances:N0}). More live memory also makes every garbage-collection stutter longer.",
+                         $"Memory piling up: {liveRef.LiveAfterGcMb:0} -> {s.LiveAfterGcMb:0} MB.");
+                }
             }
         }
 

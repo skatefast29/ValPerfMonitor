@@ -83,6 +83,40 @@ namespace ValPerfMonitor
             return new { success = true };
         }
 
+        [BridgeTool("perf/start_capture", "Start a labelled recording in one call: mode = Timing (default), Baseline, Allocations or Trace; label = text stored with the run (shown in compare.html). It records until perf/stop_capture. Any running recording is saved first; a running test is stopped")]
+        private static object StartCaptureTool(string label = "", string mode = "Timing")
+        {
+            var p = P;
+            if (p == null) return new { success = false, error = "monitor not started" };
+            Busy(p, refuse: false);
+            if (!Enum.TryParse(mode?.Trim() ?? "", true, out CaptureMode m))
+                return new { success = false, error = $"mode '{mode}' is not one of Timing, Baseline, Allocations, Trace" };
+            if (!p.WorldReady) return new { success = false, error = "not in a world yet (or the world is still loading)" };
+            p.StartLabelled(m, label ?? "");
+            var c = p.Current;
+            if (c == null) return new { success = false, error = "could not start a recording (see the log)" };
+            return new { success = true, capture = c.Number, mode = c.Mode.ToString(), label = c.Label, folder = c.Folder, warmingUp = p.WarmingUp, note = "frames during warm-up are not counted; perf/status shows secondsCounted" };
+        }
+
+        [BridgeTool("perf/stop_capture", "Stop the recording started with perf/start_capture (or any running one), save it, and return its result: FPS, 1% low, the heaviest mod and the report")]
+        private static object StopCaptureTool()
+        {
+            var p = P;
+            if (p == null) return new { success = false, error = "monitor not started" };
+            Busy(p, refuse: false);
+            var c = p.Current;
+            if (c == null) return new { success = false, error = "nothing is recording" };
+            int before = p.Results.Count;
+            p.StopTest();
+            var r = p.Results.Count > before ? p.Results[p.Results.Count - 1] : null;
+            if (r == null) return new { success = true, capture = c.Number, saved = false, note = "no frames were counted (still warming up?), so no report was written" };
+            return new
+            {
+                success = true, capture = r.Number, saved = true, mode = r.Mode.ToString(), label = r.Label, seconds = Math.Round(r.Seconds, 1),
+                fps = Round(r.Fps), fps1Low = Round(r.Fps1Low), modsPerFrame = Round(r.ModsPerFrame), unit = r.Unit, heaviestMod = r.Top, report = r.Report,
+            };
+        }
+
         [BridgeTool("perf/results", "Captures finished this session: mode, label, FPS, 1% low, heaviest mod, report path")]
         private static object Results()
         {
@@ -350,15 +384,15 @@ namespace ValPerfMonitor
         }
 
         [BridgeTool("perf/relog_test", "Start a relog test here (in a world): this is cycle 0. Then log out and back in a few times (world/logout + world/enter, or examples/relog-test.json); after each login, once the world has settled (settleSeconds), a cycle is recorded: error counts, game objects, materials and (census = true) a memory census. Before logging out again, wait until perf/relog_result says busy = false. Read the result with perf/relog_result")]
-        private static object RelogTestTool(bool census = true, int settleSeconds = 10)
+        private static object RelogTestTool(bool census = true, int settleSeconds = 10, int relogs = 3)
         {
             var p = P;
             if (p == null) return new { success = false, error = "monitor not started" };
             Busy(p, refuse: false);
             if (!p.WorldReady) return new { success = false, error = "not in a world yet (or the world is still loading)" };
             if (p.TestRunning != null) return new { success = false, error = $"{p.TestRunning} is running; stop it first (perf/stop)" };
-            RelogTest.Running = new RelogTest(census, settleSeconds);
-            return new { success = true, census, settleSeconds = RelogTest.Running.SettleSeconds, note = "cycle 0 is recorded now; wait for perf/relog_result busy = false, then log out and back in, wait again, and so on. Two relogs or more are needed to see what grows every cycle." };
+            RelogTest.Running = new RelogTest(census, settleSeconds, relogs);
+            return new { success = true, census, settleSeconds = RelogTest.Running.SettleSeconds, relogs = RelogTest.Running.Relogs, note = "cycle 0 is recorded now; wait for perf/relog_result busy = false, then log out and back in, wait again, and so on. Two relogs or more are needed to see what grows every cycle." };
         }
 
         [BridgeTool("perf/relog_result", "Result of the relog test: busy (true = a cycle is being recorded; don't log out yet), each cycle (game objects, materials, live memory, full GC ms), errors and warnings that first appeared after the first logout with their count per cycle, and static fields, component types and Unity objects that grew in every cycle (the signs of state a mod keeps across logouts)")]
@@ -372,7 +406,7 @@ namespace ValPerfMonitor
             var unity = t.GrowingEveryCycle(unity: true);
             return new
             {
-                success = true, busy = t.Busy, status = t.Status, logouts = t.Logouts,
+                success = true, busy = t.Busy, finished = t.Finished, status = t.Status, logouts = t.Logouts,
                 cycles = t.Cycles.Select(c => new
                 {
                     c.Number, sessionSeconds = Math.Round(c.SessionSeconds, 0), objectsLoaded = c.ObjectsLoaded, gameObjects = c.GameObjects, materials = c.Materials,

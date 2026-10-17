@@ -25,6 +25,8 @@ namespace ValPerfMonitor
             public bool InWorld;
             public int Instances, Zdos, GameObjects, Components, Textures, Meshes, Materials, Audio;
             public double HeapMb, MonoUsedMb, TotalUsedMb, GfxUsedMb;
+            public double LiveAfterGcMb = double.NaN; // managed memory right after the latest garbage collection
+            public float WorldSeconds = -1;           // seconds since entering the world (-1 = not in one)
             public Dictionary<string, int> ByMod;
         }
 
@@ -51,6 +53,8 @@ namespace ValPerfMonitor
                 HeapMb = GC.GetTotalMemory(false) / 1048576.0,
                 MonoUsedMb = counters.Last("gc_used_mb"), TotalUsedMb = counters.Last("total_used_mb"), GfxUsedMb = counters.Last("gfx_used_mb"),
                 ByMod = new Dictionary<string, int>(),
+                LiveAfterGcMb = Plugin.Instance?.Alarms?.LiveAfterGcMb ?? double.NaN,
+                WorldSeconds = Plugin.Instance?.WorldSeconds ?? -1,
             };
             if (behaviours != null)
                 foreach (var o in behaviours)
@@ -88,11 +92,11 @@ namespace ValPerfMonitor
         {
             var sb = new StringBuilder();
             if (!_headerWritten)
-                sb.Append("time,session_s,in_world,where,objects_loaded,zdos,game_objects,components,textures,meshes,materials,audio_clips,managed_heap_mb,mono_used_mb,unity_total_used_mb,gfx_used_mb\n");
+                sb.Append("time,session_s,in_world,where,objects_loaded,zdos,game_objects,components,textures,meshes,materials,audio_clips,managed_heap_mb,mono_used_mb,unity_total_used_mb,gfx_used_mb,live_after_gc_mb\n");
             sb.Append(s.Time).Append(',').Append(Csv.F(s.SessionSeconds, "0")).Append(',').Append(s.InWorld ? "1" : "0").Append(',').Append(Csv.Q(s.Where)).Append(',')
               .Append(N(s.Instances)).Append(',').Append(N(s.Zdos)).Append(',').Append(N(s.GameObjects)).Append(',').Append(N(s.Components)).Append(',')
               .Append(N(s.Textures)).Append(',').Append(N(s.Meshes)).Append(',').Append(N(s.Materials)).Append(',').Append(N(s.Audio)).Append(',')
-              .Append(Csv.F(s.HeapMb, "0")).Append(',').Append(Csv.F(s.MonoUsedMb, "0")).Append(',').Append(Csv.F(s.TotalUsedMb, "0")).Append(',').Append(Csv.F(s.GfxUsedMb, "0")).Append('\n');
+              .Append(Csv.F(s.HeapMb, "0")).Append(',').Append(Csv.F(s.MonoUsedMb, "0")).Append(',').Append(Csv.F(s.TotalUsedMb, "0")).Append(',').Append(Csv.F(s.GfxUsedMb, "0")).Append(',').Append(Csv.F(s.LiveAfterGcMb, "0")).Append('\n');
             writer.Append(Path.Combine(sessionFolder, "memory.csv"), sb.ToString());
 
             sb.Length = 0;
