@@ -79,7 +79,7 @@ Hotkeys still work without the panel: **Ctrl+F11** starts a new capture in the s
 - `<session>\log_errors.csv`: every distinct error and warning this session, with its mod and count. `<session>\object_costs.csv`: the most expensive objects and prefabs.
 - `<session>\load_steps.csv`: the loading steps per startup, world load and logout.
 - `startup_times.csv`, `world_load_times.csv`, `logout_times.csv`: one row per launch / load / logout, across sessions.
-- `<session>\startup_mods.csv`: each mod's loading time. `<session>\startup_methods.csv`: the startup split, when it is on. `<session>\memory.csv` (with `live_after_gc_mb`, mod and game memory at its lowest point after a garbage collection), `memory_by_mod.csv`: the leak check. `<session>\memory_census_<time>.txt`: each memory census.
+- `<session>\startup_mods.csv`: each mod's loading time. `<session>\startup_methods.csv`: the startup split, when it is on. `<session>\memory.csv` (with `live_after_gc_mb`, mod and game memory at its lowest point after a garbage collection, and `location_objects`, game objects in locations and dungeon rooms, which exploring loads and the leak check leaves out), `memory_by_mod.csv`: the leak check. `<session>\memory_census_<time>.txt`: each memory census.
 - `<session>\events.csv`: teleports, logins and logouts, season changes and ValAgentBridge commands. `<session>\pathfinding.csv`: navigation tiles and links every 10 s. `<session>\first_opens.csv`: every opening of the inventory, map, build menu, crafting stations and containers, with its frame time.
 - `<session>\<NN_Mode_label>\`, one folder per capture:
   - `report.html`: charts and sortable tables.

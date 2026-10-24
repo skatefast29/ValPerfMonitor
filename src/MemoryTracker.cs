@@ -24,9 +24,11 @@ namespace ValPerfMonitor
             public string Time, Where;
             public bool InWorld;
             public int Instances, Zdos, GameObjects, Components, Textures, Meshes, Materials, Audio;
+            public int LocationObjects = -1;          // game objects inside locations and dungeon rooms: loaded prefabs, Jotunn's copies, placed ones (-1 = unknown)
             public double HeapMb, MonoUsedMb, TotalUsedMb, GfxUsedMb;
             public double LiveAfterGcMb = double.NaN; // managed memory right after the latest garbage collection
             public float WorldSeconds = -1;           // seconds since entering the world (-1 = not in one)
+            public float X = float.NaN, Z = float.NaN; // player position (NaN = no player)
             public Dictionary<string, int> ByMod;
         }
 
@@ -55,7 +57,10 @@ namespace ValPerfMonitor
                 ByMod = new Dictionary<string, int>(),
                 LiveAfterGcMb = Plugin.Instance?.Alarms?.LiveAfterGcMb ?? double.NaN,
                 WorldSeconds = Plugin.Instance?.WorldSeconds ?? -1,
+                LocationObjects = CountLocationObjects(behaviours),
             };
+            var player = Player.m_localPlayer;
+            if (player != null) { var pos = player.transform.position; s.X = pos.x; s.Z = pos.z; }
             if (behaviours != null)
                 foreach (var o in behaviours)
                 {
@@ -75,6 +80,57 @@ namespace ValPerfMonitor
             catch { return -1; }
         }
 
+        private readonly Dictionary<int, int> _objectsInLocation = new Dictionary<int, int>();
+        private readonly HashSet<int> _seenLocations = new HashSet<int>();
+        private bool _locationsBroken;
+
+        /// <summary>
+        /// Game objects inside locations and dungeon rooms (every Location or Room component, outermost only). Exploring
+        /// raises them three ways without anything leaking: the game loads a location's prefab when you first come near
+        /// one (it sits outside any scene; MWL_SwampComplex1 alone has 35,000), Jotunn keeps a working copy of each loaded
+        /// modded location under _JotunnRoot, and the locations placed around you have many parts the loaded-object count
+        /// doesn't see. Counted per object once (a prefab never changes), then only the components are walked.
+        /// </summary>
+        private int CountLocationObjects(UnityEngine.Object[] behaviours)
+        {
+            if (_locationsBroken || behaviours == null) return -1;
+            try
+            {
+                _seenLocations.Clear();
+                int total = 0;
+                foreach (var o in behaviours)
+                {
+                    if (!(o is Location) && !(o is Room)) continue;
+                    var c = (Component)o;
+                    if (c == null) continue;
+                    var t = c.transform;
+                    if (InsideLocation(t.parent)) continue; // a dungeon's rooms sit inside its location
+                    int id = t.GetInstanceID();
+                    if (!_seenLocations.Add(id)) continue;
+                    if (!_objectsInLocation.TryGetValue(id, out int n))
+                        _objectsInLocation[id] = n = t.GetComponentsInChildren<Transform>(true).Length;
+                    total += n;
+                }
+                if (_objectsInLocation.Count > 2 * _seenLocations.Count + 1000)
+                    foreach (var id in _objectsInLocation.Keys.Where(k => !_seenLocations.Contains(k)).ToList())
+                        _objectsInLocation.Remove(id);
+                return total;
+            }
+            catch (Exception e)
+            {
+                _locationsBroken = true;
+                Plugin.Instance?.Log.LogInfo($"Game objects in locations are not counted (the leak check counts them as possible leaks): {e.Message}");
+                return -1;
+            }
+        }
+
+        private static bool InsideLocation(Transform t)
+        {
+            for (; t != null; t = t.parent)
+                if (t.GetComponent<Location>() != null || t.GetComponent<Room>() != null) return true;
+            return false;
+        }
+
         private string OwnerOf(Assembly asm)
         {
             if (_ownerByAssembly.TryGetValue(asm, out var name)) return name;
@@ -92,11 +148,11 @@ namespace ValPerfMonitor
         {
             var sb = new StringBuilder();
             if (!_headerWritten)
-                sb.Append("time,session_s,in_world,where,objects_loaded,zdos,game_objects,components,textures,meshes,materials,audio_clips,managed_heap_mb,mono_used_mb,unity_total_used_mb,gfx_used_mb,live_after_gc_mb\n");
+                sb.Append("time,session_s,in_world,where,objects_loaded,zdos,game_objects,components,textures,meshes,materials,audio_clips,managed_heap_mb,mono_used_mb,unity_total_used_mb,gfx_used_mb,live_after_gc_mb,location_objects\n");
             sb.Append(s.Time).Append(',').Append(Csv.F(s.SessionSeconds, "0")).Append(',').Append(s.InWorld ? "1" : "0").Append(',').Append(Csv.Q(s.Where)).Append(',')
               .Append(N(s.Instances)).Append(',').Append(N(s.Zdos)).Append(',').Append(N(s.GameObjects)).Append(',').Append(N(s.Components)).Append(',')
               .Append(N(s.Textures)).Append(',').Append(N(s.Meshes)).Append(',').Append(N(s.Materials)).Append(',').Append(N(s.Audio)).Append(',')
-              .Append(Csv.F(s.HeapMb, "0")).Append(',').Append(Csv.F(s.MonoUsedMb, "0")).Append(',').Append(Csv.F(s.TotalUsedMb, "0")).Append(',').Append(Csv.F(s.GfxUsedMb, "0")).Append(',').Append(Csv.F(s.LiveAfterGcMb, "0")).Append('\n');
+              .Append(Csv.F(s.HeapMb, "0")).Append(',').Append(Csv.F(s.MonoUsedMb, "0")).Append(',').Append(Csv.F(s.TotalUsedMb, "0")).Append(',').Append(Csv.F(s.GfxUsedMb, "0")).Append(',').Append(Csv.F(s.LiveAfterGcMb, "0")).Append(',').Append(N(s.LocationObjects)).Append('\n');
             writer.Append(Path.Combine(sessionFolder, "memory.csv"), sb.ToString());
 
             sb.Length = 0;

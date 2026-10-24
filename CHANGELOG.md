@@ -3,6 +3,7 @@
 ## 1.3.3
 
 - **Season marker sees every season change.** With Seasonality 3.8.5 or later it reads the season in play, so changes from the `seasonality set` command or a server sync are marked too, not only changes to the config setting.
+- **No false "Possible leak" when exploring.** The leak check now only compares moments at the same spot (within 100 m), leaves out game objects in locations and dungeon rooms (which exploring loads), and gives materials that grow while exploring a note instead of a warning.
 
 ## 1.3.2
 

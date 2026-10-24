@@ -330,7 +330,7 @@ namespace ValPerfMonitor
 
         // ---- Hidden objects piling up ----------------------------------------------------------------
 
-        private float _lastGoWarn = -1e9f, _lastMatWarn = -1e9f, _lastLiveWarn = -1e9f;
+        private float _lastGoWarn = -1e9f, _lastMatWarn = -1e9f, _lastLiveWarn = -1e9f, _lastLocNote = -1e9f;
         private double _liveWarnedAt;
 
         /// <summary>
@@ -363,27 +363,49 @@ namespace ValPerfMonitor
         private int _goWarnedAt, _matWarnedAt;
 
         /// <summary>
-        /// After each memory sample: compares with the earliest in-world sample this session that had about the same
-        /// number of loaded objects (within 15%). Same world size but many more game objects, materials or managed memory
-        /// (measured just after a garbage collection, so garbage doesn't count) = something creates them and never
-        /// lets them go. A relog test showed mods keeping ~300 MB more after every logout and login.
+        /// After each memory sample: compares with the earliest in-world sample this session taken at the same spot (within
+        /// 100 m) with about the same number of loaded objects (within 15%). Same place, same world size, but many more game
+        /// objects, materials or managed memory (measured just after a garbage collection, so garbage doesn't count) =
+        /// something creates them and never lets them go. A relog test showed mods keeping ~300 MB more after every logout
+        /// and login. Different places are never compared: a Dvergr town has many more parts per loaded object than a forest.
         /// </summary>
         public void CheckLeak(MemoryTracker.Sample s, List<MemoryTracker.Sample> all)
         {
             if (!s.InWorld || s.Instances <= 0) return;
-            var refSample = all.FirstOrDefault(x => x != s && x.InWorld && x.Instances > 0 && Math.Abs(x.Instances - s.Instances) <= 0.15 * s.Instances && x.GameObjects > 0);
+            var refSample = all.FirstOrDefault(x => x != s && x.InWorld && x.Instances > 0 && Math.Abs(x.Instances - s.Instances) <= 0.15 * s.Instances && x.GameObjects > 0 && SameSpot(x, s));
             if (refSample == null) return;
             float now = Time.realtimeSinceStartup;
             string mins = ((s.SessionSeconds - refSample.SessionSeconds) / 60).ToString("0", Csv.Inv);
-            int go = s.GameObjects - refSample.GameObjects;
-            if (go > 20000 && go > 0.25 * refSample.GameObjects && (now - _lastGoWarn > 1800 || s.GameObjects > _goWarnedAt * 1.25))
+            // Game objects in locations and dungeon rooms are left out: exploring loads them, it is not a leak.
+            bool locKnown = s.LocationObjects >= 0 && refSample.LocationObjects >= 0;
+            int locGrew = locKnown ? s.LocationObjects - refSample.LocationObjects : 0;
+            int goRef = refSample.GameObjects - (locKnown ? refSample.LocationObjects : 0);
+            int goNow = s.GameObjects - (locKnown ? s.LocationObjects : 0);
+            int go = goNow - goRef;
+            if (go > 20000 && go > 0.25 * goRef && (now - _lastGoWarn > 1800 || goNow > _goWarnedAt * 1.25))
             {
-                _lastGoWarn = now; _goWarnedAt = s.GameObjects;
-                Warn($"Game objects: {refSample.GameObjects:N0} -> {s.GameObjects:N0} in {mins} min, while loaded world objects stayed about the same ({refSample.Instances:N0} -> {s.Instances:N0}).",
-                     $"Hidden game objects piling up: {refSample.GameObjects:N0} -> {s.GameObjects:N0}.");
+                _lastGoWarn = now; _goWarnedAt = goNow;
+                string loc = locKnown ? $" Not counting game objects in locations ({refSample.LocationObjects:N0} -> {s.LocationObjects:N0})." : "";
+                Warn($"Game objects: {goRef:N0} -> {goNow:N0} in {mins} min, while loaded world objects stayed about the same ({refSample.Instances:N0} -> {s.Instances:N0}).{loc}",
+                     $"Hidden game objects piling up: {goRef:N0} -> {goNow:N0}.");
             }
+            else if (locKnown && s.GameObjects - refSample.GameObjects > 20000 && s.GameObjects - refSample.GameObjects > 0.25 * refSample.GameObjects
+                     && now - _lastLocNote > 1800)
+            {
+                _lastLocNote = now;
+                _p.Log.LogInfo($"Game objects: {refSample.GameObjects:N0} -> {s.GameObjects:N0} in {mins} min. Not a leak: {locGrew:N0} of them are in locations " +
+                               "loaded while exploring (the game loads a location when you first come near one, and Jotunn keeps a copy of modded ones).");
+            }
+            // Locations bring their own materials, so while exploring (many more location objects) this is a note, not a warning.
             int mat = s.Materials - refSample.Materials;
-            if (mat > 1000 && mat > 0.3 * refSample.Materials && (now - _lastMatWarn > 1800 || s.Materials > _matWarnedAt * 1.25))
+            bool exploring = locGrew > 20000;
+            if (mat > 1000 && mat > 0.3 * refSample.Materials && exploring && now - _lastMatWarn > 1800)
+            {
+                _lastMatWarn = now;
+                _p.Log.LogInfo($"Materials: {refSample.Materials:N0} -> {s.Materials:N0} in {mins} min while exploring ({locGrew:N0} more game objects in locations): " +
+                               "new locations bring their own materials. Not counted as a leak.");
+            }
+            else if (mat > 1000 && mat > 0.3 * refSample.Materials && (now - _lastMatWarn > 1800 || s.Materials > _matWarnedAt * 1.25))
             {
                 _lastMatWarn = now; _matWarnedAt = s.Materials;
                 Warn($"Materials: {refSample.Materials:N0} -> {s.Materials:N0} in {mins} min, while loaded world objects stayed about the same ({refSample.Instances:N0} -> {s.Instances:N0}).",
@@ -391,7 +413,7 @@ namespace ValPerfMonitor
             }
             // Only moments at least 30 s after entering the world: right after loading in, the world is still filling memory.
             var liveRef = all.FirstOrDefault(x => x != s && x.InWorld && x.Instances > 0 && Math.Abs(x.Instances - s.Instances) <= 0.15 * s.Instances
-                                                  && !double.IsNaN(x.LiveAfterGcMb) && x.WorldSeconds >= 30);
+                                                  && !double.IsNaN(x.LiveAfterGcMb) && x.WorldSeconds >= 30 && SameSpot(x, s));
             if (liveRef != null && !double.IsNaN(s.LiveAfterGcMb) && s.WorldSeconds >= 30)
             {
                 double grew = s.LiveAfterGcMb - liveRef.LiveAfterGcMb;
@@ -404,6 +426,13 @@ namespace ValPerfMonitor
                          $"Memory piling up: {liveRef.LiveAfterGcMb:0} -> {s.LiveAfterGcMb:0} MB.");
                 }
             }
+        }
+
+        private static bool SameSpot(MemoryTracker.Sample a, MemoryTracker.Sample b)
+        {
+            if (float.IsNaN(a.X) || float.IsNaN(b.X)) return float.IsNaN(a.X) && float.IsNaN(b.X);
+            float dx = a.X - b.X, dz = a.Z - b.Z;
+            return dx * dx + dz * dz <= 100f * 100f;
         }
 
         private void Warn(string what, string toast)
