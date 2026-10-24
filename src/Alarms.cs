@@ -157,6 +157,7 @@ namespace ValPerfMonitor
         private static bool _inWorld, _teleporting;
         private static float _nextSeasonPoll;
         private static ConfigEntryBase _season;
+        private static FieldInfo _seasonNow;
         private static bool _seasonLooked;
         private static string _seasonValue;
 
@@ -184,13 +185,19 @@ namespace ValPerfMonitor
                 try
                 {
                     if (Chainloader.PluginInfos.TryGetValue("RustyMods.Seasonality", out var info) && info.Instance != null)
+                    {
+                        // 3.8.5+: the season in play (its 'season set' command and a client's server sync skip the setting).
+                        _seasonNow = info.Instance.GetType().Assembly.GetType("Seasonality.SeasonTime", false)
+                            ?.GetField("m_currentSeason", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
                         _season = info.Instance.Config.FirstOrDefault(kv => kv.Key.Section == "1 - Settings" && kv.Key.Key == "Season").Value;
+                    }
                 }
                 catch { }
             }
-            if (_season == null) return;
+            if (_season == null && _seasonNow == null) return;
             string v;
-            try { v = _season.BoxedValue?.ToString(); } catch { _season = null; return; }
+            try { v = (_seasonNow != null ? _seasonNow.GetValue(null) : _season.BoxedValue)?.ToString(); }
+            catch { _season = null; _seasonNow = null; return; }
             if (_seasonValue != null && v != _seasonValue) Mark("season", $"change to {v} (Seasonality)");
             _seasonValue = v;
         }

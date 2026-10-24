@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.3
+
+- **Season marker sees every season change.** With Seasonality 3.8.5 or later it reads the season in play, so changes from the `seasonality set` command or a server sync are marked too, not only changes to the config setting.
+
 ## 1.3.2
 
 - **Log flood warning counts only lines that reach the log file.** Levels BepInEx drops (Debug in the default `LogLevels` of `BepInEx.cfg`) no longer trigger it, and the warning names the real level (info, message, warning, error).
@@ -29,7 +33,7 @@
 - **Memory census** (new in the F11 Run tab, and `perf/memory_census` / `perf/memory_census_result`): counts every object kept in memory (reachable from static fields and from all components and ScriptableObjects) and groups them by mod, by root (one static field, or all components of one type) and by object type, with approximate MB. Then it times a full garbage collection, whose length grows with the number of live objects. Results go to the log in plain English and to `memory_census_<time>.txt`, which has column headers and a summary on top. Static fields are read straight from memory, so no mod's setup code is ever run early (a self-test checks this on every run). The work is spread over a few seconds of frames, which are left out of captures; a running recording is ended (and saved) first. The monitor's own memory is shown on a separate line.
   - **What grew** (leak finder): each census is compared with the previous one this session, by owner and by root, so a mod whose objects keep growing while you stand in one place stands out.
   - **Harmony's share by mod**: Harmony's copies of patched methods (the biggest single holder in a modded game) are split over the mods patching each method, with the monitor's own probes on their own line.
-- **Cheaper when idle**: when a recording or test ends, the probes and the network counting stop doing any work. Before, they kept costing about 0.3–1 ms per frame until the game closed. The once-a-minute object scan, memory check (`memory.csv`) and 10-second world sample now only run while something is recording, so idle play no longer stutters once a minute.
+- **Cheaper when idle**: when a recording or test ends, the probes and the network counting stop doing any work. Before, they kept costing about 0.3â€“1 ms per frame until the game closed. The once-a-minute object scan, memory check (`memory.csv`) and 10-second world sample now only run while something is recording, so idle play no longer stutters once a minute.
 - **Tests stay clean**:
   - `perf/alloc_check` and `perf/worldgen_cost` refuse to run during a suite, timed test, A/B test, object costs or memory census. The frames of those tools and of `perf/objects`, `perf/slow_objects` and `perf/session_logs` are never counted.
   - Splitting slow spawns into parts no longer adds timers in the middle of a test or a Baseline capture.
