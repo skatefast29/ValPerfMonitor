@@ -39,7 +39,7 @@ namespace ValPerfMonitor
         private List<ModEntry> _rows = new List<ModEntry>();
         private readonly List<(string label, string avg, string calls, string max)> _expandedRows = new List<(string, string, string, string)>();
         private float _nextRefresh;
-        private string _header = "", _header2 = "", _status = "";
+        private string _header = "", _header2 = "", _status = "", _net = "";
         private Vector2 _scrollLive, _scrollResults;
 
         private GUIStyle _statusStyle, _statusShadow;
@@ -96,6 +96,7 @@ namespace ValPerfMonitor
             string split = cap.Mode == CaptureMode.Baseline ? "" :
                 $"   <b>mods {stats.WindowModsAvg:0.00} {Unit}</b>   <color=#7fb4ff>game {stats.WindowGameAvg:0.00} {Unit}</color>";
             _header = $"<b>{(frame > 0 ? 1000f / frame : 0):0} FPS</b>   frame {frame:0.0} ms (worst {stats.WindowFrameMax:0.0}){split}";
+            _net = NetLine();
             _header2 = $"capture {cap.Number} · {cap.Mode}{(cap.Label.Length > 0 ? " · " + cap.Label : "")} · {cap.MeasuredSeconds:0}s counted · {cap.Stats.TotExcluded} frames excluded";
 
             _expandedRows.Clear();
@@ -113,6 +114,17 @@ namespace ValPerfMonitor
                         ((double)Probe.SourceCalls[s.Id] / frames).ToString("0.0"), (Probe.SourceMax[s.Id] * perCall).ToString("0")));
                 }
             }
+        }
+
+        /// <summary>One line on the connection to a dedicated server (ServerLink), or "" when not on one.</summary>
+        private string NetLine()
+        {
+            var l = _plugin.Link;
+            if (l == null || !l.Connected) return "";
+            string wait = l.Waiting > 1f ? $"   <color=#ff5555>server not answering {l.Waiting:0.0} s</color>" : "";
+            string backlog = l.BacklogKb * 1024 >= l.BacklogLimit * 0.9 ? $"   <color=#ffcc55>upload backed up {l.BacklogKb:0} KB</color>" : "";
+            return $"server: ping {(float.IsNaN(l.NetPing) ? "?" : l.NetPing.ToString("0"))} ms · server answers in {(float.IsNaN(l.ServerDelay) ? "?" : l.ServerDelay.ToString("0"))} ms · " +
+                   $"↑{l.UpKbs:0.0} ↓{l.DownKbs:0.0} KB/s · {l.Players} players · hitches {l.Hitches}{wait}{backlog}";
         }
 
         private string StatusText()
@@ -406,6 +418,7 @@ namespace ValPerfMonitor
             }
             GUILayout.Label(_header, _label);
             GUILayout.Label(_header2, _small);
+            if (_net.Length > 0) GUILayout.Label(_net, _small);
             DrawGraph(GUILayoutUtility.GetRect(760, 80));
             if (Cap.Mode == CaptureMode.Baseline)
             {
@@ -590,6 +603,7 @@ namespace ValPerfMonitor
             if (full)
             {
                 GUILayout.Label(_header2, _small);
+            if (_net.Length > 0) GUILayout.Label(_net, _small);
                 DrawGraph(GUILayoutUtility.GetRect(w, 70));
             }
             if (Cap.Mode != CaptureMode.Baseline)

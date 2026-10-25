@@ -90,9 +90,15 @@ namespace ValPerfMonitor
         /// <returns>false while the bridge's assemblies are not loaded yet (call again later).</returns>
         public static bool WatchBridge(Harmony harmony, ManualLogSource log)
         {
-            var registry = AccessTools.TypeByName("Lib.GAB.Tools.ToolRegistry");
-            var dispatcher = AccessTools.TypeByName("ValAgentBridge.MainThreadDispatcher");
-            if (registry == null || dispatcher == null) return false; // no bridge (yet)
+            // Looked up in the bridge's own assembly only: AccessTools.TypeByName logs a warning each time a type is missing,
+            // which filled the log every 15 s in profiles without the bridge.
+            var bridge = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == "ValAgentBridge");
+            if (bridge == null) return false; // no bridge (yet)
+            var dispatcher = bridge.GetType("ValAgentBridge.MainThreadDispatcher", false);
+            var registry = dispatcher == null ? null : AppDomain.CurrentDomain.GetAssemblies()
+                .Select(a => { try { return a.GetType("Lib.GAB.Tools.ToolRegistry", false); } catch { return null; } })
+                .FirstOrDefault(t => t != null);
+            if (registry == null || dispatcher == null) return false;
             try
             {
                 var call = AccessTools.Method(registry, "CallToolAsync", new[] { typeof(string), typeof(object) });

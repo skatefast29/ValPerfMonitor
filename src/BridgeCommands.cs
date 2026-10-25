@@ -136,6 +136,41 @@ namespace ValPerfMonitor
             };
         }
 
+        [BridgeTool("perf/connection", "The connection to a dedicated server right now and this visit so far: network ping, ping through the game and how long the server took to answer, connection quality, upload/download KB/s, upload backlog, world objects sent/received, how many loaded objects and creatures you simulate, server hitches (no answer for over a second; server busy or connection trouble), and the last join's steps")]
+        private static object Connection()
+        {
+            var l = P?.Link;
+            if (l == null) return new { success = false, error = "monitor not started" };
+            var j = JoinWatch.Running ?? JoinWatch.Last;
+            return new
+            {
+                success = true,
+                connected = l.Connected,
+                server = l.Server,
+                minutes = Round(l.MinutesConnected),
+                now = new
+                {
+                    l.Players, networkPingMs = Round(l.NetPing), gamePingMs = Round(l.GamePing), serverDelayMs = Round(l.ServerDelay),
+                    qualityLocal = Round(l.QualityLocal), qualityRemote = Round(l.QualityRemote),
+                    uploadKbs = Round(l.UpKbs), downloadKbs = Round(l.DownKbs), uploadBacklogKb = Round(l.BacklogKb),
+                    worldObjectsSentPerSec = l.ZdosSent, worldObjectsReceivedPerSec = l.ZdosRecv, waitingForAnswerSeconds = Round(l.Waiting),
+                    objectsNearby = l.Nearby, objectsMine = l.Mine, objectsOtherPlayers = l.Others, creaturesNearby = l.Creatures, creaturesMine = l.CreaturesMine,
+                },
+                summary = l.Connected ? l.Summary(l.MinutesConnected) : null,
+                upload = l.LastUpload == null ? null : l.LastUpload.Top(15).Where(r => r.Sent + r.Changes > 0).Select(r => new
+                {
+                    prefab = r.Name, sentPerSec = Round(r.Sent / l.LastUpload.Seconds), kbPerSec = Round(r.SentBytes / l.LastUpload.Seconds / 1024),
+                    changesPerSec = Round(r.Changes / l.LastUpload.Seconds), changedBy = UploadWatch.ChangedByText(r, 4),
+                }).ToList(),
+                hitches = new { total = l.Hitches, serverBusy = l.HitchesServer, connection = l.HitchesConnection, longestSeconds = Round(l.LongestHitch), recent = l.RecentHitches },
+                join = j == null ? null : new
+                {
+                    j.Server, finished = JoinWatch.Running != j, totalSeconds = Round(j.TotalSeconds),
+                    steps = j.Steps.Select(s => new { s.step, atSeconds = Round(s.at) }).ToList(),
+                },
+            };
+        }
+
         [BridgeTool("perf/load_times", "Startup and world load times this session, with the slowest mods and steps")]
         private static object LoadTimes()
         {

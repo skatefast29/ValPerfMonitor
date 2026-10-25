@@ -18,7 +18,7 @@ namespace ValPerfMonitor
     {
         public const string Guid = "valheimmods.ValPerfMonitor";
         public const string Name = "ValPerfMonitor";
-        public const string Version = "1.3.3";
+        public const string Version = "1.4.0";
 
         internal static Plugin Instance;
         internal ModRegistry Registry;
@@ -33,6 +33,8 @@ namespace ValPerfMonitor
         internal LoadTimes Loads;
         internal NetworkStats Net;
         internal MemoryTracker Memory;
+        internal ServerLink Link;
+        private ServerMode _server;
         private Overlay _overlay;
         private Harmony _harmony;
         private InputBlock _input;
@@ -97,6 +99,12 @@ namespace ValPerfMonitor
             _awakeTicks = Stopwatch.GetTimestamp();
             Instance = this;
             Probe.MainThreadId = Thread.CurrentThread.ManagedThreadId;
+            if (ServerMode.Detect())
+            {
+                // A dedicated server: only the light server logging, none of the usual work.
+                _server = new ServerMode(this, Config, Logger);
+                return;
+            }
 
             CfgRecordOnLaunch = Config.Bind("1 - General", "Record on launch", true, "Start a continuous recording as soon as the game loads. Off = wait until a test is started from the panel.");
             CfgStartMode = Config.Bind("1 - General", "Capture mode on launch", CaptureMode.Timing,
@@ -166,6 +174,7 @@ namespace ValPerfMonitor
         // Start runs after every plugin's Awake, which is where most mods apply their Harmony patches.
         private void Start()
         {
+            if (_server != null) { _server.Start(); return; }
             long setupStart = Stopwatch.GetTimestamp();
             RootFolder = Path.Combine(Paths.BepInExRootPath, "ValPerfMonitor");
             SessionName = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", Csv.Inv);
@@ -196,6 +205,8 @@ namespace ValPerfMonitor
             AbTest.CheckLeftover(RootFolder, Logger);
             CpuClock.Init(Logger);
             Net = new NetworkStats(Registry, Logger);
+            Link = new ServerLink(Logger);
+            JoinWatch.Attach(Guid + ".join", Registry, Logger);
             Memory = new MemoryTracker(Registry);
             Alarms = new Alarms(this);
             FirstOpens.Attach(Guid + ".firstopens", Logger);
@@ -303,6 +314,7 @@ namespace ValPerfMonitor
 
         private void Update()
         {
+            if (_server != null) { _server.Tick(); return; }
             if (Instrumenter == null)
                 return;
             long t0 = Stopwatch.GetTimestamp();
@@ -371,6 +383,8 @@ namespace ValPerfMonitor
                 _heavy = true;
 
             float now = Time.realtimeSinceStartup;
+            JoinWatch.Running?.Tick(this);
+            Link.Frame(this);
             Alarms.Tick();
             RelogTest.Running?.Tick(this, inWorld);
             if (now >= _nextRescanCheck)
@@ -1007,6 +1021,9 @@ namespace ValPerfMonitor
             Suite != null ? (Suite.Single ? "a timed test" : "a suite") : Ab != null ? "an A/B test" :
             ObjectCosts.Running != null ? "object costs" : MemoryCensus.Running != null ? "a memory census" : null;
 
+        /// <summary>Monitor work done inside game code (stack samples): counted as the monitor's own time and subtracted.</summary>
+        internal void AddMonitorTicks(long ticks) => _monitorTicks += ticks;
+
         /// <summary>This frame did work for a bridge command: never count it in a capture.</summary>
         internal void MarkHeavy() => _heavy = true;
 
@@ -1022,6 +1039,7 @@ namespace ValPerfMonitor
 
         private void OnDestroy()
         {
+            if (_server != null) { _server.Stop(); return; }
             Probe.Recording = false;
             Ab?.PutBack();
             ObjectCosts.Running?.Abort();
@@ -1031,6 +1049,7 @@ namespace ValPerfMonitor
             if (Writer == null)
                 return;
             try { FinishCapture(); } catch (Exception e) { Logger.LogError(e); }
+            try { Link?.EndVisit(this, "game closed"); } catch (Exception e) { Logger.LogError(e); }
             try { WriteLogErrors(); } catch (Exception e) { Logger.LogError(e); }
             Writer.Dispose();
             Counters?.Dispose();

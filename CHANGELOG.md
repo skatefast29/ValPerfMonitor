@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.0
+
+- **Dedicated server connection.** Ping, how long the server takes to answer, connection quality, traffic, upload backlog and who runs the objects around you, once a second (`connection.csv`, `perf/connection`, overlay line).
+- **What fills your upload.** World objects your PC sends to the server, per type of object, with the game or mod code that changes them (`upload.csv`).
+- **Server hitches.** Every time the server stops answering for over a second, marked server busy or connection trouble (`server_hitches.csv`).
+- **Join timing.** Each step of joining a server and what the server sent meanwhile, config sync per mod (`join_times.csv`).
+- **Server mode.** Installed on a dedicated server, it only logs frame rate, slow frames, world saves, players' connections and network messages per mod; no mod timing.
+- Received network messages show their names (ConfigSync, ZDOData...) instead of numbers where known.
+- No more HarmonyX warnings every 15 s in profiles without ValAgentBridge.
+
 ## 1.3.3
 
 - **Season marker sees every season change.** With Seasonality 3.8.5 or later it reads the season in play, so changes from the `seasonality set` command or a server sync are marked too, not only changes to the config setting.

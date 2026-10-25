@@ -19,6 +19,8 @@ namespace ValPerfMonitor
     /// The owner is the assembly of the registered handler, looked up once per message name.
     /// Totals from the game's own connection stats (KB/s in and out, ping) are sampled per interval.
     /// Hooks exist only while the monitor's probes are attached (never in Baseline).
+    /// A second copy (JoinWatch) counts only what arrives while joining a server, with its own hooks that come
+    /// off once the player is in the world. On a dedicated server (ServerMode) the counting is always on.
     /// </summary>
     internal sealed class NetworkStats
     {
@@ -31,7 +33,7 @@ namespace ValPerfMonitor
             public long IvSentCalls, IvSentBytes, IvRecvCalls, IvRecvBytes;  // current interval
         }
 
-        private static NetworkStats _instance;
+        private static NetworkStats _instance, _join;
 
         private readonly ModRegistry _registry;
         private readonly ManualLogSource _log;
@@ -60,11 +62,40 @@ namespace ValPerfMonitor
             try { return f(); } catch { return null; }
         }
 
-        public NetworkStats(ModRegistry registry, ManualLogSource log)
+        public NetworkStats(ModRegistry registry, ManualLogSource log, bool join = false)
         {
             _registry = registry;
             _log = log;
-            _instance = this;
+            if (join) _join = this;
+            else _instance = this;
+        }
+
+        // Received messages arrive as hashes only; these names are tried so the common ones read as words.
+        private static readonly string[] KnownNames =
+        {
+            "ZDOData", "RoutedRPC", "PeerInfo", "ClientHandshake", "ServerHandshake", "NetTime", "PlayerList", "AdminList",
+            "HistoricalPlayerList", "ServerSyncedPlayerData", "Disconnect", "Error", "Kicked", "RemotePrint", "SavePlayerProfile",
+            "CharacterID", "PlayerID", "RPC_ValidatedSimulationDistance", "RPC_RequestValidSimulationDistance",
+            "RPC_PeerRealtimeMultiplaying", "ServerSync VersionCheck", "DestroyZDO", "RequestZDO",
+        };
+        private static Dictionary<int, string> _hints;
+
+        /// <summary>Names to try for a message hash: the game's own, and ServerSync's "&lt;mod&gt; ConfigSync" per plugin.</summary>
+        private string Hint(int hash)
+        {
+            if (_hints == null)
+            {
+                _hints = new Dictionary<int, string>();
+                foreach (var n in KnownNames) _hints[n.GetStableHashCode()] = n;
+                try
+                {
+                    foreach (var m in _registry.Visible.Where(m => m.IsPlugin))
+                        foreach (var id in new[] { m.Guid, m.Name })
+                            if (!string.IsNullOrEmpty(id)) _hints[(id + " ConfigSync").GetStableHashCode()] = id + " ConfigSync";
+                }
+                catch { }
+            }
+            return _hints.TryGetValue(hash, out var name) ? name : null;
         }
 
         // ---- Hooks ------------------------------------------------------------------------------
@@ -81,6 +112,29 @@ namespace ValPerfMonitor
             ok += Patch(harmony, AccessTools.Method(typeof(ZRpc), "HandlePackage"), nameof(PeerHandlePrefix), null);
             if (ok < 5) _log.LogWarning($"Network tracking: only {ok} of 5 hooks attached (the game's network code changed); some messages are not counted.");
         }
+
+        /// <summary>Join copy: counts received messages only (what the server sends while you join).</summary>
+        public void AttachJoin(Harmony harmony)
+        {
+            int ok = Patch(harmony, AccessTools.Method(typeof(ZRoutedRpc), "HandleRoutedRPC"), nameof(JoinRoutedHandlePrefix), null);
+            ok += Patch(harmony, AccessTools.Method(typeof(ZRpc), "HandlePackage"), nameof(JoinPeerHandlePrefix), null);
+            if (ok < 2) _log.LogDebug($"Join traffic: only {ok} of 2 hooks attached.");
+        }
+
+        private static bool OnMainThread => Thread.CurrentThread.ManagedThreadId == Probe.MainThreadId;
+
+        private static void JoinRoutedHandlePrefix(ZRoutedRpc __instance, ZRoutedRpc.RoutedRPCData data)
+        {
+            if (_join != null && data != null && OnMainThread) _join.CountRoutedHandled(__instance, data);
+        }
+
+        private static void JoinPeerHandlePrefix(ZRpc __instance, ZPackage package)
+        {
+            if (_join != null && package != null && OnMainThread) _join.CountPeerHandled(__instance, package);
+        }
+
+        /// <summary>Total KB received in peer messages (routed RPCs travel inside "RoutedRPC", so they are not added again).</summary>
+        public double PeerReceivedKb => _peer.Values.Sum(e => e.RecvBytes) / 1024.0;
 
         private int Patch(Harmony harmony, MethodBase target, string prefix, string postfix)
         {
@@ -127,11 +181,16 @@ namespace ValPerfMonitor
         private static void RoutedHandlePrefix(ZRoutedRpc __instance, ZRoutedRpc.RoutedRPCData data)
         {
             if (!Active || data == null) return;
-            var e = _instance.Routed(data.m_methodHash);
+            _instance.CountRoutedHandled(__instance, data);
+        }
+
+        private void CountRoutedHandled(ZRoutedRpc rpc, ZRoutedRpc.RoutedRPCData data)
+        {
+            var e = Routed(data.m_methodHash);
             long bytes = data.m_parameters?.Size() ?? 0;
             e.RecvCalls++; e.IvRecvCalls++;
             e.RecvBytes += bytes; e.IvRecvBytes += bytes;
-            if (!e.OwnerTried) _instance.ResolveRouted(e, __instance, data);
+            if (!e.OwnerTried) ResolveRouted(e, rpc, data);
         }
 
         private static void PeerSendPrefix(ZRpc __instance, out bool __state)
@@ -152,16 +211,21 @@ namespace ValPerfMonitor
         private static void PeerHandlePrefix(ZRpc __instance, ZPackage package)
         {
             if (!Active || package == null) return;
+            _instance.CountPeerHandled(__instance, package);
+        }
+
+        private void CountPeerHandled(ZRpc rpc, ZPackage package)
+        {
             int hash;
             int pos = package.GetPos();
             try { hash = package.ReadInt(); }
             catch { return; }
             finally { package.SetPos(pos); }
-            var e = _instance.Peer(hash);
+            var e = Peer(hash);
             long bytes = package.Size();
             e.RecvCalls++; e.IvRecvCalls++;
             e.RecvBytes += bytes; e.IvRecvBytes += bytes;
-            if (!e.OwnerTried) _instance.ResolvePeer(e, __instance);
+            if (!e.OwnerTried) ResolvePeer(e, rpc);
         }
 
         // ---- Lookups ----------------------------------------------------------------------------
@@ -178,7 +242,7 @@ namespace ValPerfMonitor
         private Entry Routed(int hash)
         {
             if (!_routed.TryGetValue(hash, out var e))
-                _routed[hash] = e = new Entry { Kind = "routed", Hash = hash, Name = "#" + hash, Owner = "" };
+                _routed[hash] = e = new Entry { Kind = "routed", Hash = hash, Name = Hint(hash) ?? "#" + hash, Owner = "" };
             return e;
         }
 
@@ -194,7 +258,7 @@ namespace ValPerfMonitor
         private Entry Peer(int hash)
         {
             if (!_peer.TryGetValue(hash, out var e))
-                _peer[hash] = e = new Entry { Kind = "peer", Hash = hash, Name = hash == 0 ? "(ping)" : "#" + hash, Owner = hash == 0 ? "Valheim" : "" };
+                _peer[hash] = e = new Entry { Kind = "peer", Hash = hash, Name = hash == 0 ? "(ping)" : Hint(hash) ?? "#" + hash, Owner = hash == 0 ? "Valheim" : "" };
             return e;
         }
 
