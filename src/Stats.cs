@@ -174,9 +174,12 @@ namespace ValPerfMonitor
             if (f.Gc) { parts.Add("garbage collection"); keys.Add("garbage collection"); }
             if (f.Saving) { parts.Add("world save"); keys.Add("world save"); }
             if (f.Teleporting) { parts.Add("teleport (new area loading)"); keys.Add("teleport"); }
+            // Called at the end of the frame it describes, so the frame count is this frame's.
+            bool cleanup = AssetCleanup.Label(UnityEngine.Time.frameCount) == "yes";
+            if (cleanup) { parts.Add("the game's asset clean-up (Resources.UnloadUnusedAssets)"); keys.Add("asset clean-up"); }
             // A game or test-tool event in the last 3 s (looked up only for slow frames: no garbage on normal ones).
             string ev = Events.Recent(UnityEngine.Time.realtimeSinceStartup, 3f, out string evKind);
-            if (ev != null && evKind != "teleport") { parts.Add(ev); keys.Add(evKind == "bridge" ? "after a ValAgentBridge command" : "after " + evKind); }
+            if (ev != null && evKind != "teleport" && !(cleanup && evKind == "asset cleanup")) { parts.Add(ev); keys.Add(evKind == "bridge" ? "after a ValAgentBridge command" : "after " + evKind); }
             if (f.ObjectsChanged >= 10) { parts.Add($"objects loaded/unloaded ({f.ObjectsChanged})"); keys.Add("objects loading/unloading"); }
             bool timed = Mode == CaptureMode.Timing || Mode == CaptureMode.Trace;
             if (timed && top != null && topValue >= 0.4f * frameMs)

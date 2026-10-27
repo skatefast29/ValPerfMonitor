@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.5.1
+
+- Server: frame times come from the monitor's own clock. Unity's put the slow startup frames on the wrong row.
+
+## 1.5.0
+
+- The game's asset clean-up (after world load, every 20-60 min, hourly on servers) is timed and named on slow frames, in the game and on servers.
+- Materials only count as a possible leak if they are still there after an asset clean-up.
+- Harmony's copies of methods are freed once the monitor's probes come off, so later tests have no extra garbage collection cost.
+- Memory census names the mod or menu new UI objects belong to.
+- Server: slow frames say whether a garbage collection or the asset clean-up ran in them; summaries count slow frames by cause.
+- Server: optional memory census once per run while nobody is on (off by default).
+- The "Hooking took" line is no longer skipped when the last probe used up a frame's time.
+
+## 1.4.1
+
+- Server summary's worst ping leaves out each player's first 30 s (joining).
+- Server summary's busiest network messages count only that summary's minutes, not the whole session.
+- Server startup is reported once on its own and left out of the summaries.
+- Server startup split by mod: loading steps and each slow startup frame, with every mod's patch on them (`server_startup_*.csv`).
+
 ## 1.4.0
 
 - **Dedicated server connection.** Ping, how long the server takes to answer, connection quality, traffic, upload backlog and who runs the objects around you, once a second (`connection.csv`, `perf/connection`, overlay line).
@@ -44,7 +65,7 @@
 - **Memory census** (new in the F11 Run tab, and `perf/memory_census` / `perf/memory_census_result`): counts every object kept in memory (reachable from static fields and from all components and ScriptableObjects) and groups them by mod, by root (one static field, or all components of one type) and by object type, with approximate MB. Then it times a full garbage collection, whose length grows with the number of live objects. Results go to the log in plain English and to `memory_census_<time>.txt`, which has column headers and a summary on top. Static fields are read straight from memory, so no mod's setup code is ever run early (a self-test checks this on every run). The work is spread over a few seconds of frames, which are left out of captures; a running recording is ended (and saved) first. The monitor's own memory is shown on a separate line.
   - **What grew** (leak finder): each census is compared with the previous one this session, by owner and by root, so a mod whose objects keep growing while you stand in one place stands out.
   - **Harmony's share by mod**: Harmony's copies of patched methods (the biggest single holder in a modded game) are split over the mods patching each method, with the monitor's own probes on their own line.
-- **Cheaper when idle**: when a recording or test ends, the probes and the network counting stop doing any work. Before, they kept costing about 0.3â€“1 ms per frame until the game closed. The once-a-minute object scan, memory check (`memory.csv`) and 10-second world sample now only run while something is recording, so idle play no longer stutters once a minute.
+- **Cheaper when idle**: when a recording or test ends, the probes and the network counting stop doing any work. Before, they kept costing about 0.3Ã¢â‚¬â€œ1 ms per frame until the game closed. The once-a-minute object scan, memory check (`memory.csv`) and 10-second world sample now only run while something is recording, so idle play no longer stutters once a minute.
 - **Tests stay clean**:
   - `perf/alloc_check` and `perf/worldgen_cost` refuse to run during a suite, timed test, A/B test, object costs or memory census. The frames of those tools and of `perf/objects`, `perf/slow_objects` and `perf/session_logs` are never counted.
   - Splitting slow spawns into parts no longer adds timers in the middle of a test or a Baseline capture.

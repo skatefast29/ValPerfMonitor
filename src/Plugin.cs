@@ -18,7 +18,7 @@ namespace ValPerfMonitor
     {
         public const string Guid = "valheimmods.ValPerfMonitor";
         public const string Name = "ValPerfMonitor";
-        public const string Version = "1.4.0";
+        public const string Version = "1.5.1";
 
         internal static Plugin Instance;
         internal ModRegistry Registry;
@@ -210,6 +210,8 @@ namespace ValPerfMonitor
             Memory = new MemoryTracker(Registry);
             Alarms = new Alarms(this);
             FirstOpens.Attach(Guid + ".firstopens", Logger);
+            AssetCleanup.CountUnityObjects = true;
+            AssetCleanup.Attach(Guid + ".assetcleanup", Logger);
             Instrumenter.Calibrate();
             double probeBytes = Instrumenter.ChildOverhead[(int)CaptureMode.Allocations];
             if (AllocCounter.Exact && probeBytes > 8)
@@ -301,6 +303,8 @@ namespace ValPerfMonitor
                 Probe.CommitSources(_lastFrameCounted && !(gc && Current != null && Current.Stats.DropsGcFrames));
                 Probe.ClearFrame();
                 _heavy = false;
+                // After the reset: counting what the game's asset clean-up freed lands in the next frame, which is then left out.
+                if (frameStart != 0 && AssetCleanup.Frame(rawMs, Time.frameCount)) _heavy = true;
                 if (frameStart != 0)
                 {
                     try { Loads.Tick(t0, rawMs, monitorBusy, StartupTimed, WorldLoadTimed, LogoutTimed); }
@@ -547,7 +551,7 @@ namespace ValPerfMonitor
             if (mode != OverlayMode.Off && wasOff && Current == null && Suite == null && WorldReady)
             {
                 StartContinuous(CaptureMode.Timing);
-                if (Current != null) ShowToast($"Live overlay: {mode}. Started a Timing recording for it (F11 → Stop ends it).", 4f);
+                if (Current != null) ShowToast($"Live overlay: {mode}. Started a Timing recording for it (F11 Ã¢â€ â€™ Stop ends it).", 4f);
                 return;
             }
             ShowToast($"Live overlay: {mode}", 2f);
@@ -566,7 +570,7 @@ namespace ValPerfMonitor
             AbortAb();
             Suite = null;
             StartCapture(mode, CfgLabel.Value);
-            if (Current != null) ShowToast($"Recording {Current.Mode} until you stop it (F11 → Stop).");
+            if (Current != null) ShowToast($"Recording {Current.Mode} until you stop it (F11 Ã¢â€ â€™ Stop).");
         }
 
         /// <summary>A recording with its own label (perf/start_capture), until stopped. The "Run label" setting is left alone.</summary>
@@ -814,20 +818,23 @@ namespace ValPerfMonitor
         }
 
         private void LogSteps(string title, List<(string label, int calls, double seconds)> steps,
-                              List<(string step, string mod, int calls, double seconds)> mods = null)
+                              List<(string step, string mod, int calls, double seconds)> mods = null) => LogSteps(Logger, title, steps, mods);
+
+        internal static void LogSteps(ManualLogSource log, string title, List<(string label, int calls, double seconds)> steps,
+                                      List<(string step, string mod, int calls, double seconds)> mods = null)
         {
             var top = steps.Where(s => s.seconds >= 0.05).Take(6).ToList();
             if (top.Count == 0) return;
-            Logger.LogInfo($"  {title} (slowest; each includes the mod patches on it):");
+            log.LogInfo($"  {title} (slowest; each includes the mod patches on it):");
             foreach (var (label, calls, seconds) in top)
             {
-                Logger.LogInfo($"  {seconds,7:0.00} s  {label}{(calls > 1 ? $" ({calls} times)" : "")}");
+                log.LogInfo($"  {seconds,7:0.00} s  {label}{(calls > 1 ? $" ({calls} times)" : "")}");
                 if (mods == null || seconds < 0.5) continue;
                 var inStep = mods.Where(m => m.step == label).ToList();
                 if (inStep.Count == 0) continue;
                 double modSum = inStep.Sum(m => m.seconds);
                 string list = string.Join(", ", inStep.Where(m => m.seconds >= 0.01).Take(6).Select(m => $"{m.mod} {m.seconds:0.00} s"));
-                Logger.LogInfo($"             mods' patches {modSum:0.00} s{(list.Length > 0 ? " (" + list + (inStep.Count(m => m.seconds >= 0.01) > 6 ? ", ..." : "") + ")" : "")}; " +
+                log.LogInfo($"             mods' patches {modSum:0.00} s{(list.Length > 0 ? " (" + list + (inStep.Count(m => m.seconds >= 0.01) > 6 ? ", ..." : "") + ")" : "")}; " +
                                $"the game's own code {Math.Max(0, seconds - modSum):0.00} s");
             }
         }
@@ -1033,7 +1040,7 @@ namespace ValPerfMonitor
             var names = new string[Probe.SourceCount];
             foreach (var s in Registry.Sources)
                 if (s != null && s.Id >= 0 && s.Id < names.Length)
-                    names[s.Id] = $"{s.Mod.Name}: {s.Kind} {s.Name}{(s.Targets.Count > 0 && s.Kind != "Game" ? " → " + s.Targets[0] : "")}";
+                    names[s.Id] = $"{s.Mod.Name}: {s.Kind} {s.Name}{(s.Targets.Count > 0 && s.Kind != "Game" ? " Ã¢â€ â€™ " + s.Targets[0] : "")}";
             _sourceNames = names;
         }
 
@@ -1085,7 +1092,7 @@ namespace ValPerfMonitor
             var c = p.Current;
             if (c == null) return "";
             string phase = p.WarmingUp ? $"warming up {p.WarmupLeft:0}s" : $"{c.MeasuredSeconds:0}/{Seconds:0}s";
-            return Single ? $"Test: {Steps[Step]} – {phase}" : $"Suite step {Step + 1}/{Steps.Count}: {Steps[Step]} – {phase}";
+            return Single ? $"Test: {Steps[Step]} Ã¢â‚¬â€œ {phase}" : $"Suite step {Step + 1}/{Steps.Count}: {Steps[Step]} Ã¢â‚¬â€œ {phase}";
         }
 
         public void Begin(Plugin p) => p.StartCapture(Steps[0], Label);

@@ -99,6 +99,27 @@ namespace ValPerfMonitor
             return true;
         }
 
+        /// <summary>Take the timers off the mod patches on these methods (the server's frame loops once startup is done).</summary>
+        public static void Disarm(IEnumerable<MethodBase> originals)
+        {
+            if (_harmony == null) return;
+            var off = new List<MethodBase>();
+            foreach (var original in originals)
+            {
+                Patches info;
+                try { info = Harmony.GetPatchInfo(original); } catch { continue; }
+                if (info == null) continue;
+                foreach (var p in info.Prefixes.Concat(info.Postfixes).Concat(info.Finalizers))
+                {
+                    var m = p.PatchMethod;
+                    if (m == null || !ModOf.ContainsKey(m)) continue;
+                    try { _harmony.Unpatch(m, HarmonyPatchType.All, _harmony.Id); off.Add(m); } catch { }
+                    ModOf.Remove(m);
+                }
+            }
+            HarmonyCopies.FreeUnused(off, _log);
+        }
+
         /// <summary>Every patch method that patches a main menu (FejdStartup) method: never hooked here.</summary>
         private static HashSet<MethodBase> MainMenuPatches()
         {
@@ -135,6 +156,7 @@ namespace ValPerfMonitor
             // Loading steps called from inside this patch are timed as their own steps: take them out.
             long nested = LoadSteps.DoneAtDepth[PStepDepth[d]] - PNested[d];
             double self = (end - PStart[d] - nested) * MsPerTick;
+            if (self < 0.5 && LoadSteps.InFrameStep) return; // a mod patch on a frame loop: only the slow calls are kept
             if (Events.Count < 20000 && ModOf.TryGetValue(__originalMethod, out var mod))
                 Events.Add(new Event { Step = LoadSteps.CurrentLabel ?? "outside the timed steps", Mod = mod, Start = PStart[d], SelfMs = Math.Max(0, self) });
         }

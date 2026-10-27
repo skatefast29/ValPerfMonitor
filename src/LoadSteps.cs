@@ -57,9 +57,22 @@ namespace ValPerfMonitor
             ("Localization", "SetupLanguage", "Translations load (Localization.SetupLanguage)"),
         };
 
+        // A dedicated server's startup: the first frames after the world loads can freeze for seconds, so its
+        // frame loops are timed too, only until startup is done (they run every frame).
+        private static readonly (string type, string method, string label)[] FrameTargets =
+        {
+            ("ZNet", "Update", "Network update (ZNet.Update)"),
+            ("ZDOMan", "Update", "World objects update (ZDOMan.Update)"),
+            ("ZoneSystem", "Update", "Zone update (ZoneSystem.Update)"),
+            ("ZNetScene", "Update", "Objects update (ZNetScene.Update)"),
+            ("Game", "Update", "Game update (Game.Update)"),
+        };
+
         public struct Event { public string Label; public long Start, End; public double SelfMs; }
 
         private static readonly Dictionary<MethodBase, string> Labels = new Dictionary<MethodBase, string>();
+        private static readonly HashSet<MethodBase> FrameSteps = new HashSet<MethodBase>();
+        private static Harmony _frameHarmony;
         private static readonly List<Event> Events = new List<Event>();
         private static readonly long[] StackStart = new long[64];
         private static readonly long[] StackChild = new long[64];
@@ -94,6 +107,46 @@ namespace ValPerfMonitor
             }
             if (ok < Targets.Length) log.LogInfo($"Timing {ok} of {Targets.Length} loading steps (the others have changed in this game version).");
         }
+
+        /// <summary>Server startup: also time the frame loops (attach before LoadPatches.Arm so their mod patches get timers).</summary>
+        public static void AttachFrameSteps(string harmonyId, ManualLogSource log)
+        {
+            _frameHarmony = new Harmony(harmonyId);
+            foreach (var (typeName, name, label) in FrameTargets)
+            {
+                var type = AccessTools.TypeByName(typeName);
+                var m = type == null ? null : AccessTools.GetDeclaredMethods(type).FirstOrDefault(x => x.Name == name && !x.IsGenericMethod && !x.IsAbstract);
+                if (m == null) { log.LogDebug($"Frame step not found: {typeName}.{name}"); continue; }
+                try
+                {
+                    Labels[m] = label;
+                    FrameSteps.Add(m);
+                    _frameHarmony.Patch(m,
+                        prefix: new HarmonyMethod(typeof(LoadSteps), nameof(Prefix)) { priority = Priority.First },
+                        finalizer: new HarmonyMethod(typeof(LoadSteps), nameof(Finalizer)) { priority = Priority.Last });
+                }
+                catch (Exception e) { FrameSteps.Remove(m); log.LogDebug($"Frame step {typeName}.{name} not timed: {e.Message}"); }
+            }
+        }
+
+        /// <summary>The frame loops timed during server startup.</summary>
+        internal static List<MethodBase> FrameStepMethods => FrameSteps.ToList();
+
+        /// <summary>Startup is done: take the timers off the frame loops.</summary>
+        public static void DetachFrameSteps(ManualLogSource log)
+        {
+            if (_frameHarmony == null) return;
+            foreach (var m in FrameSteps)
+            {
+                try { _frameHarmony.Unpatch(m, HarmonyPatchType.All, _frameHarmony.Id); } catch { }
+                Labels.Remove(m);
+            }
+            HarmonyCopies.FreeUnused(FrameSteps, log);
+            FrameSteps.Clear();
+        }
+
+        /// <summary>The innermost step running now is a frame loop (its tiny calls are not worth recording).</summary>
+        internal static bool InFrameStep => _depth > 0 && FrameSteps.Count > 0 && StackMethod[_depth - 1] != null && FrameSteps.Contains(StackMethod[_depth - 1]);
 
         /// <summary>The hooked steps and their labels (LoadPatches times the mod patches on them).</summary>
         internal static IEnumerable<KeyValuePair<MethodBase, string>> Steps => Labels;
@@ -130,6 +183,8 @@ namespace ValPerfMonitor
             if (d > 0) StackChild[d - 1] += incl;
             DoneAtDepth[d] += incl;
             StackMethod[d] = null;
+            // Frame loops run every frame: only the slow calls are kept.
+            if (FrameSteps.Count > 0 && incl * MsPerTick < 2 && FrameSteps.Contains(__originalMethod)) return;
             Labels.TryGetValue(__originalMethod, out var label);
             if (Events.Count < 10000)
                 Events.Add(new Event { Label = label ?? __originalMethod.Name, Start = StackStart[d], End = end, SelfMs = (incl - StackChild[d]) * MsPerTick });

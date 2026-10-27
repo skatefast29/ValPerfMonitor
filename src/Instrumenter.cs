@@ -394,8 +394,9 @@ namespace ValPerfMonitor
         {
             if (Pending == 0)
             {
-                // The previous call may have used up its budget on the very last item.
+                // The previous call may have used up its budget on the very last item: its round is reported now.
                 _guard?.AllDone();
+                if (_hookStart != 0) HookingDone();
                 return false;
             }
             long start = Stopwatch.GetTimestamp();
@@ -423,6 +424,13 @@ namespace ValPerfMonitor
                     return true;
             }
             _guard?.AllDone();
+            HookingDone();
+            return true;
+        }
+
+        /// <summary>A round of hooking is finished: say how long it took and what is measured now.</summary>
+        private void HookingDone()
+        {
             FullRound = false;
             double freq = Stopwatch.Frequency;
             _log.LogInfo($"Hooking took {(Stopwatch.GetTimestamp() - _hookStart) / freq:0.0} s over {_hookFrames} frames: {_attachCount} probes attached in {_attachTicks / freq:0.0} s, " +
@@ -446,7 +454,6 @@ namespace ValPerfMonitor
                 if (_guard.Rejected.Count > 10) _log.LogInfo($"  ...and {_guard.Rejected.Count - 10} more.");
                 _guard.Rejected.Clear();
             }
-            return true;
         }
 
         private void Attach(SourceInfo source)
@@ -540,6 +547,7 @@ namespace ValPerfMonitor
             }
             Hooked = false;
             _log.LogInfo(stuck.Count == 0 ? "All probes removed." : $"Probes removed, except on {stuck.Count} method(s) listed above.");
+            HarmonyCopies.FreeAndReport(patched.Where(m => !stuck.Contains(m)), _log, "the probes were on");
         }
 
         /// <summary>Re-attach every probe after Baseline.</summary>

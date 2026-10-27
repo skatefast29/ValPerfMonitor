@@ -336,7 +336,7 @@ namespace ValPerfMonitor
 
         // ---- Hidden objects piling up ----------------------------------------------------------------
 
-        private float _lastGoWarn = -1e9f, _lastMatWarn = -1e9f, _lastLiveWarn = -1e9f, _lastLocNote = -1e9f;
+        private float _lastGoWarn = -1e9f, _lastMatWarn = -1e9f, _lastMatWait = -1e9f, _lastLiveWarn = -1e9f, _lastLocNote = -1e9f;
         private double _liveWarnedAt;
 
         /// <summary>
@@ -410,6 +410,17 @@ namespace ValPerfMonitor
                 _lastMatWarn = now;
                 _p.Log.LogInfo($"Materials: {refSample.Materials:N0} -> {s.Materials:N0} in {mins} min while exploring ({locGrew:N0} more game objects in locations): " +
                                "new locations bring their own materials. Not counted as a leak.");
+            }
+            // Material copies nothing uses any more stay until the game's asset clean-up (every 20-60 min) frees them:
+            // they only count once they are still there after one (2026-10-26: 6,300 -> 9,100, back to 6,400 by itself).
+            else if (mat > 1000 && mat > 0.3 * refSample.Materials && !AssetCleanup.DoneAtSession.Any(t => t > refSample.SessionSeconds && t < s.SessionSeconds))
+            {
+                if (now - _lastMatWait > 1800)
+                {
+                    _lastMatWait = now;
+                    _p.Log.LogInfo($"Materials: {refSample.Materials:N0} -> {s.Materials:N0} in {mins} min. Not called a leak yet: the game's asset clean-up " +
+                                   "(every 20-60 min, after a respawn, sleep or a quiet moment) frees materials nothing uses any more. Checked again after the next one.");
+                }
             }
             else if (mat > 1000 && mat > 0.3 * refSample.Materials && (now - _lastMatWarn > 1800 || s.Materials > _matWarnedAt * 1.25))
             {

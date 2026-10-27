@@ -289,7 +289,9 @@ namespace ValPerfMonitor
 
             // ---- Unity's own objects: game objects by scene and root, materials by name ----
             Unity = new UnityCensus();
-            foreach (var st in Unity.Run(() => OutOfTime)) { Status = "Unity objects: " + st; yield return null; }
+            _ownerNames = new Dictionary<Assembly, string>(); // Release dropped it; menus are named by the mod that owns their scripts
+            foreach (var st in Unity.Run(() => OutOfTime, OwnerOf)) { Status = "Unity objects: " + st; yield return null; }
+            _ownerNames = null;
 
             // ---- Full collections: one untimed (clears the census's own garbage), then timed ones, one per frame ----
             Status = "clearing the census's own memory";
@@ -768,7 +770,10 @@ namespace ValPerfMonitor
                 l.Add($"Harmony's copies of {N(PatchedMethods)} patched methods keep {Millions(PatchObjects)} objects ({Mb(PatchBytes)} MB). Biggest shares: {string.Join("; ", hp)}.");
                 var self = HarmonyByMod.FirstOrDefault(x => x.mod == SelfPatches);
                 if (self.mod != null && self.count > 0)
-                    l.Add($"Of those, {Millions(self.count)} objects come from this monitor's own probes; they go away when the monitor is removed.");
+                    l.Add($"Of those, {Millions(self.count)} objects come from this monitor's own probes; they go away when it takes its probes off (Baseline) or is removed.");
+                var none = HarmonyByMod.FirstOrDefault(x => x.mod == NoPatches);
+                if (none.mod != null && none.count >= 100000)
+                    l.Add($"{Millions(none.count)} objects are Harmony's copies of {none.methods} methods with no patches left; they make every full garbage collection slower until the game restarts.");
             }
             if (HasPrevious)
             {
@@ -868,13 +873,36 @@ namespace ValPerfMonitor
     /// </summary>
     internal static class MonoStatics
     {
-        private const string Mono = "mono-2.0-bdwgc";
-        [DllImport(Mono)] private static extern IntPtr mono_domain_get();
-        [DllImport(Mono)] private static extern IntPtr mono_class_from_mono_type(IntPtr type);
-        [DllImport(Mono)] private static extern IntPtr mono_unity_class_try_get_vtable(IntPtr domain, IntPtr klass);
-        [DllImport(Mono)] private static extern IntPtr mono_vtable_get_static_field_data(IntPtr vtable);
-        [DllImport(Mono)] private static extern uint mono_field_get_offset(IntPtr field);
-        [DllImport(Mono)] private static extern IntPtr mono_gchandle_new_v2(IntPtr obj, int pinned);
+        // Unity's Mono is mono-2.0-bdwgc.dll on Windows and libmonobdwgc-2.0.so on Linux (the dedicated server).
+        private static class Win
+        {
+            private const string Mono = "mono-2.0-bdwgc";
+            [DllImport(Mono)] public static extern IntPtr mono_domain_get();
+            [DllImport(Mono)] public static extern IntPtr mono_class_from_mono_type(IntPtr type);
+            [DllImport(Mono)] public static extern IntPtr mono_unity_class_try_get_vtable(IntPtr domain, IntPtr klass);
+            [DllImport(Mono)] public static extern IntPtr mono_vtable_get_static_field_data(IntPtr vtable);
+            [DllImport(Mono)] public static extern uint mono_field_get_offset(IntPtr field);
+            [DllImport(Mono)] public static extern IntPtr mono_gchandle_new_v2(IntPtr obj, int pinned);
+        }
+
+        private static class Linux
+        {
+            private const string Mono = "monobdwgc-2.0";
+            [DllImport(Mono)] public static extern IntPtr mono_domain_get();
+            [DllImport(Mono)] public static extern IntPtr mono_class_from_mono_type(IntPtr type);
+            [DllImport(Mono)] public static extern IntPtr mono_unity_class_try_get_vtable(IntPtr domain, IntPtr klass);
+            [DllImport(Mono)] public static extern IntPtr mono_vtable_get_static_field_data(IntPtr vtable);
+            [DllImport(Mono)] public static extern uint mono_field_get_offset(IntPtr field);
+            [DllImport(Mono)] public static extern IntPtr mono_gchandle_new_v2(IntPtr obj, int pinned);
+        }
+
+        private static bool _linux;
+        private static IntPtr mono_domain_get() => _linux ? Linux.mono_domain_get() : Win.mono_domain_get();
+        private static IntPtr mono_class_from_mono_type(IntPtr type) => _linux ? Linux.mono_class_from_mono_type(type) : Win.mono_class_from_mono_type(type);
+        private static IntPtr mono_unity_class_try_get_vtable(IntPtr domain, IntPtr klass) => _linux ? Linux.mono_unity_class_try_get_vtable(domain, klass) : Win.mono_unity_class_try_get_vtable(domain, klass);
+        private static IntPtr mono_vtable_get_static_field_data(IntPtr vtable) => _linux ? Linux.mono_vtable_get_static_field_data(vtable) : Win.mono_vtable_get_static_field_data(vtable);
+        private static uint mono_field_get_offset(IntPtr field) => _linux ? Linux.mono_field_get_offset(field) : Win.mono_field_get_offset(field);
+        private static IntPtr mono_gchandle_new_v2(IntPtr obj, int pinned) => _linux ? Linux.mono_gchandle_new_v2(obj, pinned) : Win.mono_gchandle_new_v2(obj, pinned);
 
         public enum Result { Ok, NotSetUp, Skipped }
 
@@ -912,6 +940,7 @@ namespace ValPerfMonitor
         {
             try
             {
+                _linux = Application.platform == RuntimePlatform.LinuxPlayer || Application.platform == RuntimePlatform.LinuxServer;
                 _domain = mono_domain_get();
                 if (_domain == IntPtr.Zero) return "no Mono domain";
                 var marker = new object();

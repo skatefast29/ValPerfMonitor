@@ -70,7 +70,7 @@ namespace ValPerfMonitor
         private readonly ManualLogSource _log;
         private readonly ModRegistry _registry;
         private readonly Queue<MethodInfo> _toHook = new Queue<MethodInfo>();
-        private readonly List<MethodInfo> _hooked = new List<MethodInfo>();
+        private readonly List<MethodInfo> _hooked = new List<MethodInfo>(), _unhooked = new List<MethodInfo>();
         private Phase _phase = Phase.Hooking;
         private float _phaseUntil;
         private long _measureStart;
@@ -163,10 +163,12 @@ namespace ValPerfMonitor
                     {
                         var m = _hooked[_hooked.Count - 1];
                         _hooked.RemoveAt(_hooked.Count - 1);
-                        try { _harmony.Unpatch(m, HarmonyPatchType.All, _harmony.Id); }
+                        try { _harmony.Unpatch(m, HarmonyPatchType.All, _harmony.Id); _unhooked.Add(m); }
                         catch (Exception e) { _log.LogWarning($"Object costs: could not remove the timer on {Instrumenter.Describe(m)}: {e.Message}"); }
                         if (Stopwatch.GetTimestamp() > deadline) return true;
                     }
+                    HarmonyCopies.FreeAndReport(_unhooked, _log, "object costs timed");
+                    _unhooked.Clear();
                     End();
                     return true;
             }
