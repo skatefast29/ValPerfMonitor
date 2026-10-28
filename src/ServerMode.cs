@@ -18,7 +18,7 @@ namespace ValPerfMonitor
     /// On a dedicated server the monitor does none of its usual work (no probes on mods, no panel, no tests).
     /// It only writes down what the game already knows, once a second, so it costs next to nothing:
     ///  - server.csv: frame rate, worst frame, players, world objects, traffic, the worst player's ping
-    ///  - server_players.csv (every 5 s): each player's ping, connection quality, traffic, upload backlog, position
+    ///  - server_players.csv (every 5 s): each player's ping, whether they are still joining, traffic, upload backlog, position
     ///  - server_hitches.csv: every frame slower than the threshold, and whether a world save, a garbage collection or
     ///    the game's asset clean-up ran in it
     ///  - memory_census_*.txt: once per run with nobody on, what keeps the server's memory (optional)
@@ -32,7 +32,7 @@ namespace ValPerfMonitor
     {
         public const string RowHeader = "time,uptime_s,players,fps,frame_ms_avg,worst_frame_ms,slow_frames,world_objects,objects_sent_s,objects_received_s," +
                                         "upload_kb_s,download_kb_s,worst_ping_ms,worst_ping_player,worst_backlog_kb,gc,heap_mb,saving\n";
-        public const string PlayerHeader = "time,player,game_ping_ms,network_ping_ms,quality_local,quality_remote,to_player_kb_s,from_player_kb_s,backlog_kb,seconds_since_answer,pos_x,pos_z\n";
+        public const string PlayerHeader = "time,player,game_ping_ms,joining,to_player_kb_s,from_player_kb_s,backlog_kb,seconds_since_answer,pos_x,pos_z\n";
         public const string HitchHeader = "time,uptime_s,frame_ms,players,world_save,world_objects,garbage_collection,asset_cleanup\n";
 
         /// <summary>No graphics device, or started with -batchmode: the dedicated server.</summary>
@@ -140,12 +140,12 @@ namespace ValPerfMonitor
             }
         }
 
-        /// <summary>Said once per server run: the network ping and connection quality columns stay empty, the rest still works.</summary>
+        /// <summary>Said once per server run: Steam's ping isn't there to fall back on, the game ping and traffic still work.</summary>
         private void SteamUnavailable(string why)
         {
             if (_steamReported) return;
             _steamReported = true;
-            _log.LogInfo($"Steam's connection details (network ping, quality) are not available on this server ({why}); the game ping and traffic per player are recorded instead.");
+            _log.LogInfo($"Steam's connection details are not available on this server ({why}); the game's own ping and traffic per player are recorded instead.");
         }
 
         private bool SteamQuality(ISocket socket, out float ql, out float qr, out int ping, out float outB, out float inB)
@@ -160,6 +160,13 @@ namespace ValPerfMonitor
             outB = status.m_flOutBytesPerSec; inB = status.m_flInBytesPerSec;
             return true;
         }
+
+        /// <summary>
+        /// Still joining: the first 30 s, or no position yet (the player's character isn't in the world). A rejoin after a
+        /// drop counts again, since the game makes a new connection for it.
+        /// </summary>
+        private static bool Joining(ZNetPeer peer, PeerWatch w, float now) =>
+            now - w.FirstSeen < JoinGraceSeconds || (peer.m_refPos.x == 0 && peer.m_refPos.z == 0);
 
         private static int Backlog(ISocket socket)
         {
@@ -233,6 +240,8 @@ namespace ValPerfMonitor
             _summaryMinutes = cfg.Bind(section, "Log summary every (minutes)", 10f, "How often a short summary goes to the server log (LogOutput.log). 0 = only when the server shuts down.");
             _startupSplit = cfg.Bind(section, "Split startup by mod", true, "Time the server's loading steps and its first frames after the world loads, with every mod's patch on them, so a slow startup is explained (server_startup_*.csv and the log). The timers come off once startup is done.");
             _census = cfg.Bind(section, "Memory census when empty", false, "Once per server run, when nobody has been on for 2 minutes after startup, count what keeps the server's memory, per mod (memory_census_*.txt and the log). Off by default: it is the one heavy job here. It takes a minute or two in small slices, then times three full garbage collections (each a short freeze, with nobody on); it stops at once if a player joins and tries again later.");
+            if (cfg.Bind(section, "Install the patcher if missing", true, "When BepInEx/patchers has no ValPerfMonitor.Preloader.dll, write the copy this plugin carries there (it works from the next restart). It keeps past session logs and times startup per mod.").Value)
+                PreloaderInstall.EnsureOnServer(log);
             // Before the world scene loads, so its loading steps are timed (only the game's own methods here; mods' patches at Start).
             if (_on.Value && _startupSplit.Value) LoadSteps.Attach(Plugin.Guid + ".loadsteps", log);
         }
@@ -245,6 +254,7 @@ namespace ValPerfMonitor
                 return;
             }
             _folder = Path.Combine(Paths.BepInExRootPath, "ValPerfMonitor", "server_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", Csv.Inv));
+            SessionCheck.RememberFolder(_folder);
             _writer = new BackgroundWriter(_log);
             _registry = new ModRegistry(60);
             _registry.LoadPlugins(typeof(Plugin).Assembly);
@@ -335,18 +345,20 @@ namespace ValPerfMonitor
                 string cleanup = frameFrom > 0 ? AssetCleanup.Label(frameFrom, tick) : AssetCleanup.Label(frame);
                 if (save) _sHitchSave++;
                 if (gcFrame) _sHitchGc++;
-                if (cleanup == "yes") _sHitchCleanup++;
+                if (cleanup.Length > 0) _sHitchCleanup++; // "asked" too: the clean-up's freeze can land on the frame that asked for it
                 int players = znet != null ? znet.GetNrOfPlayers() : 0;
                 int objects = ZDOMan.instance != null ? ZDOMan.instance.NrOfObjects() : -1;
                 _writer.Append(Path.Combine(_folder, "server_hitches.csv"), (_hitchHeader ? "" : HitchHeader) +
                     $"{DateTime.Now.ToString("HH:mm:ss", Csv.Inv)},{Csv.F(now - _started, "0.0")},{Csv.F(ms, "0")},{players},{(save ? "yes" : "")},{objects},{(gcFrame ? "yes" : "")},{cleanup}\n");
                 _hitchHeader = true;
-                if (ms >= 1000f)
+                if (ms >= 1000f && _inStartup)
+                    _log.LogInfo($"Server froze for {ms / 1000f:0.0} s while starting up (split into its loading steps once startup is done).");
+                else if (ms >= 1000f)
                 {
                     var why = new List<string>(3);
                     if (save) why.Add("world save");
-                    if (cleanup == "yes") why.Add("the game's asset clean-up");
-                    if (gcFrame) why.Add("garbage collection");
+                    if (cleanup.Length > 0) why.Add("the game's asset clean-up");
+                    if (gcFrame) why.Add("a garbage collection ran in it");
                     _log.LogInfo($"Server froze for {ms / 1000f:0.0} s{(why.Count > 0 ? " (" + string.Join(", ", why.ToArray()) + ")" : "")} with {players} players on.");
                 }
                 if (_inStartup)
@@ -480,8 +492,8 @@ namespace ValPerfMonitor
         {
             _secondStart = now;
             int players = 0, objects = -1, sent = 0, recv = 0;
-            float up = 0, down = 0, worstPing = 0, worstBacklog = 0, summaryPing = 0;
-            string worstPlayer = "", summaryPlayer = "";
+            float up = 0, down = 0, worstPing = 0, worstBacklog = 0;
+            string worstPlayer = "";
             if (znet != null)
             {
                 players = znet.GetNrOfPlayers();
@@ -496,9 +508,8 @@ namespace ValPerfMonitor
                     // The game ping (through the server's and the player's main loops); Steam's network ping when that is all there is.
                     float ping = w.Ping;
                     if (float.IsNaN(ping) && Quality(peer.m_socket, out _, out _, out int steamPing, out _, out _) && steamPing > 0) ping = steamPing;
-                    if (!float.IsNaN(ping) && ping > worstPing) { worstPing = ping; worstPlayer = peer.m_playerName ?? ""; }
-                    // The summary's worst ping leaves out a player's first 30 s: while joining, the answers wait behind the world data.
-                    if (!float.IsNaN(ping) && ping > summaryPing && now - w.FirstSeen >= JoinGraceSeconds) { summaryPing = ping; summaryPlayer = peer.m_playerName ?? ""; }
+                    // Worst ping leaves out players still joining: their answers wait behind the world data (4-14 s, 2026-10-27 log).
+                    if (!float.IsNaN(ping) && ping > worstPing && !Joining(peer, w, now)) { worstPing = ping; worstPlayer = peer.m_playerName ?? ""; }
                     worstBacklog = Math.Max(worstBacklog, Backlog(peer.m_socket));
                 }
             }
@@ -514,7 +525,7 @@ namespace ValPerfMonitor
             _gcAt = gc;
             _sSeconds++; _sFrames += _frames; _sFrameSum += _frameSum; _sSlow += _slow; _sPlayers += players;
             if (_worst > _sWorst) _sWorst = _worst;
-            if (summaryPing > _sWorstPing) { _sWorstPing = summaryPing; _sWorstPingPlayer = summaryPlayer; }
+            if (worstPing > _sWorstPing) { _sWorstPing = worstPing; _sWorstPingPlayer = worstPlayer; }
             _frames = 0; _frameSum = 0; _worst = 0; _slow = 0;
         }
 
@@ -527,13 +538,11 @@ namespace ValPerfMonitor
                 if (peer == null || !peer.IsReady() || peer.m_socket == null) continue;
                 try
                 {
-                    bool known = Quality(peer.m_socket, out float ql, out float qr, out int ping, out _, out _);
                     float since = SinceAnswer != null && peer.m_rpc != null ? SinceAnswer(peer.m_rpc) : float.NaN;
                     var w = peer.m_rpc != null ? Watch(peer.m_rpc) : null;
                     var pos = peer.m_refPos;
                     _players.Append(when).Append(',').Append(Csv.Q(peer.m_playerName ?? "")).Append(',').Append(Csv.F(w != null ? w.Ping : double.NaN, "0")).Append(',')
-                            .Append(known && ping > 0 ? ping.ToString(Csv.Inv) : "").Append(',')
-                            .Append(Csv.F(ql > 0 ? ql : double.NaN, "0.00")).Append(',').Append(Csv.F(qr > 0 ? qr : double.NaN, "0.00")).Append(',')
+                            .Append(w != null && Joining(peer, w, Time.realtimeSinceStartup) ? "yes" : "").Append(',')
                             .Append(Csv.F(w != null && w.Counted ? w.ToKbs : double.NaN, "0.0")).Append(',').Append(Csv.F(w != null && w.Counted ? w.FromKbs : double.NaN, "0.0")).Append(',')
                             .Append(Csv.F(Backlog(peer.m_socket) / 1024.0, "0.0")).Append(',').Append(Csv.F(since, "0.0")).Append(',')
                             .Append(Csv.F(pos.x, "0")).Append(',').Append(Csv.F(pos.z, "0")).Append('\n');
@@ -554,6 +563,7 @@ namespace ValPerfMonitor
         private void Network(float now, bool summary)
         {
             _nextNetwork = now + 60f;
+            _net.NameFromCode(now); // names found by the last scan go into this minute's rows; starts the scan the first minute one is unnamed
             string rows = _net.IntervalRows(DateTime.Now.ToString("HH:mm:ss", Csv.Inv) + "," + Csv.F(now - _started, "0") + ",", Math.Max(1, now - _lastNetworkAt));
             _lastNetworkAt = now;
             if (rows.Length > 0)

@@ -18,7 +18,7 @@ namespace ValPerfMonitor
     {
         public const string Guid = "valheimmods.ValPerfMonitor";
         public const string Name = "ValPerfMonitor";
-        public const string Version = "1.5.1";
+        public const string Version = "1.6.0";
 
         internal static Plugin Instance;
         internal ModRegistry Registry;
@@ -28,6 +28,7 @@ namespace ValPerfMonitor
         internal BackgroundWriter Writer;
         internal Capture Current;
         internal Suite Suite;
+        internal PlayRecording Play;
         internal AbTest Ab, LastAb;
         internal string SessionFolder, RootFolder, SessionName;
         internal LoadTimes Loads;
@@ -57,6 +58,8 @@ namespace ValPerfMonitor
         internal ConfigEntry<float> CfgInterval, CfgSummaryInterval, CfgFrameSpikeMs, CfgOwnerSpikeMs, CfgOwnerSpikeKb, CfgPatchBudgetMs, CfgTestPatchBudgetMs,
                                     CfgWarmup, CfgSwitchWarmup, CfgWorldSettle, CfgMonitorExcludeMs, CfgSuiteSeconds, CfgBenchmarkSeconds, CfgScale;
         internal ConfigEntry<float> CfgMemorySeconds, CfgLeakSeconds;
+        internal ConfigEntry<bool> CfgPlayOnLaunch;
+        internal ConfigEntry<float> CfgPlayTiming, CfgPlayAlloc, CfgPlayTrace, CfgPlayCensus;
         internal ConfigEntry<int> CfgFloodLines;
         internal ConfigEntry<int> CfgWindowFrames, CfgRows, CfgFontSize, CfgPosX, CfgPosY, CfgMaxTraces;
 
@@ -156,6 +159,12 @@ namespace ValPerfMonitor
             CfgSuiteHideOverlay = Config.Bind("4 - Suite", "Hide live overlay during timed tests", true, "Only the one-line status shows while a timed test runs. The overlay itself costs frame time and allocates memory; hiding it keeps it out of the measurement.");
             CfgBenchmarkSeconds = Config.Bind("4 - Suite", "Single test seconds", 60f, "Length of a single-mode timed test.");
 
+            CfgPlayOnLaunch = Config.Bind("8 - Full play recording", "Full play recording on launch", false, "Instead of the usual one-mode recording, record everything while you play: Timing, Allocations and Trace take turns in blocks, with a memory census now and then, and one combined summary (play_summary.txt in the session folder). Heavier: more stutters and lower FPS. Also started from F11 -> Run a test.");
+            CfgPlayTiming = Config.Bind("8 - Full play recording", "Timing minutes", 10f, "Length of each Timing block (CPU time per mod and game system). 0 = left out.");
+            CfgPlayAlloc = Config.Bind("8 - Full play recording", "Allocations minutes", 3f, "Length of each Allocations block (garbage per mod). 0 = left out.");
+            CfgPlayTrace = Config.Bind("8 - Full play recording", "Trace minutes", 2f, "Length of each Trace block (flame graphs of slow frames). 0 = left out.");
+            CfgPlayCensus = Config.Bind("8 - Full play recording", "Memory census every (minutes)", 30f, "Between blocks, count what keeps memory (a stutter of a few seconds). 0 = off.");
+
             CfgRows = Config.Bind("5 - Overlay", "Rows", 15, "");
             CfgFontSize = Config.Bind("5 - Overlay", "Font size", 13, "");
             CfgScale = Config.Bind("5 - Overlay", "Scale", 1f, "Overall overlay scale (for 1440p/4K).");
@@ -179,6 +188,7 @@ namespace ValPerfMonitor
             RootFolder = Path.Combine(Paths.BepInExRootPath, "ValPerfMonitor");
             SessionName = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", Csv.Inv);
             SessionFolder = Path.Combine(RootFolder, SessionName);
+            SessionCheck.RememberFolder(SessionFolder);
             Writer = new BackgroundWriter(Logger);
             _input = new InputBlock(Logger);
             LoadRunHistory();
@@ -235,7 +245,7 @@ namespace ValPerfMonitor
             _nextMemory = _sessionStart + 30f;
             _lastGcCount = GC.CollectionCount(0);
             Probe.Recording = false; // on while a capture runs (StartCapture), off when idle (GoIdle)
-            _autoStartPending = CfgRecordOnLaunch.Value;
+            _autoStartPending = CfgRecordOnLaunch.Value || CfgPlayOnLaunch.Value;
             StartCoroutine(FrameLoop());
         }
 
@@ -352,7 +362,7 @@ namespace ValPerfMonitor
                 if (_worldSince >= 0 && TestRunning != null)
                 {
                     Logger.LogInfo($"Left the world (logout or death) during {TestRunning}: stopped.");
-                    StopTest();
+                    StopTest(userStop: false);
                     ShowToast("Left the world: the test was stopped; what was recorded is saved.");
                 }
                 _worldSince = -1f;
@@ -361,8 +371,12 @@ namespace ValPerfMonitor
             if (_autoStartPending && WorldReady)
             {
                 _autoStartPending = false;
-                StartCapture(CfgStartMode.Value, CfgLabel.Value);
-                ShowToast($"ValPerfMonitor: recording {Current?.Mode}. F11 opens the test panel.");
+                if (CfgPlayOnLaunch.Value) StartPlay();
+                else
+                {
+                    StartCapture(CfgStartMode.Value, CfgLabel.Value);
+                    ShowToast($"ValPerfMonitor: recording {Current?.Mode}. F11 opens the test panel.");
+                }
             }
 
             // At the main menu, before any world loads: also time mod patches added since startup.
@@ -437,6 +451,7 @@ namespace ValPerfMonitor
 
             Suite?.Tick(this);
             Ab?.Tick(this);
+            Play?.Tick(this, inWorld);
             var oc = ObjectCosts.Running;
             if (oc != null)
             {
@@ -548,7 +563,7 @@ namespace ValPerfMonitor
         {
             bool wasOff = CfgOverlay.Value == OverlayMode.Off;
             CfgOverlay.Value = mode;
-            if (mode != OverlayMode.Off && wasOff && Current == null && Suite == null && WorldReady)
+            if (mode != OverlayMode.Off && wasOff && Current == null && Suite == null && Play == null && WorldReady)
             {
                 StartContinuous(CaptureMode.Timing);
                 if (Current != null) ShowToast($"Live overlay: {mode}. Started a Timing recording for it (F11 Ã¢â€ â€™ Stop ends it).", 4f);
@@ -561,7 +576,34 @@ namespace ValPerfMonitor
         {
             AbortAb();
             Suite = null;
+            StopPlay("a new recording was started");
             StartCapture(Current?.Mode ?? CfgStartMode.Value, CfgLabel.Value);
+        }
+
+        /// <summary>Start a full play recording (see PlayRecording). Anything recording is saved first.</summary>
+        internal void StartPlay()
+        {
+            AbortAb();
+            Suite = null;
+            StopPlay("restarted");
+            FinishCapture();
+            GoIdle();
+            Play = new PlayRecording(this);
+            Logger.LogInfo($"Full play recording started: {Play.Describe()}. Summary: {Path.Combine(SessionFolder, "play_summary.txt")}");
+            ShowToast("Full play recording: Timing, Allocations and Trace take turns while you play. Expect some stutter. F11 -> Stop ends it.", 10f);
+        }
+
+        /// <summary>End the full play recording (its current block is saved) and log its summary.</summary>
+        internal void StopPlay(string why)
+        {
+            var play = Play;
+            if (play == null) return;
+            Play = null;
+            if (Current != null && Current.PlayBlock) { FinishCapture(); GoIdle(); }
+            play.Write(this);
+            Logger.LogInfo($"Full play recording ended ({why}):");
+            foreach (var line in play.Summary(this).Where(x => x.Length > 0).Take(40)) Logger.LogInfo("  " + line);
+            Logger.LogInfo($"  Full summary: {Path.Combine(SessionFolder, "play_summary.txt")}");
         }
 
         /// <summary>Record in one mode until stopped.</summary>
@@ -569,6 +611,7 @@ namespace ValPerfMonitor
         {
             AbortAb();
             Suite = null;
+            StopPlay("a continuous recording was started");
             StartCapture(mode, CfgLabel.Value);
             if (Current != null) ShowToast($"Recording {Current.Mode} until you stop it (F11 Ã¢â€ â€™ Stop).");
         }
@@ -578,6 +621,7 @@ namespace ValPerfMonitor
         {
             AbortAb();
             Suite = null;
+            StopPlay("a labelled recording was started");
             StartCapture(mode, label);
             if (Current != null) ShowToast($"Recording {Current.Mode}{(Current.Label.Length > 0 ? " (" + Current.Label + ")" : "")} until it is stopped.", 4f);
         }
@@ -610,14 +654,23 @@ namespace ValPerfMonitor
         }
 
         /// <summary>Stop whatever is running, save what was recorded, and go idle.</summary>
-        internal void StopTest()
+        /// <param name="userStop">The owner (or perf/stop) asked: with a full play recording on, stopping a test the owner
+        /// started leaves it running (it carries on after), and stopping anything else ends it. Leaving the world never ends it.</param>
+        internal void StopTest(bool userStop = true)
         {
-            bool wasSuite = Suite != null || Ab != null || ObjectCosts.Running != null || MemoryCensus.Running != null;
+            bool playCensus = Play != null && Play.OwnsCensus;
+            bool wasSuite = Suite != null || Ab != null || ObjectCosts.Running != null || (MemoryCensus.Running != null && !playCensus);
             AbortAb();
             Suite = null;
             FinishCapture();
             GoIdle();
-            ShowToast(wasSuite ? "Test stopped early; what was recorded is saved." : "Recording stopped and saved.");
+            if (Play != null && userStop && !wasSuite)
+            {
+                StopPlay("stopped");
+                ShowToast("Full play recording stopped and saved. Summary: play_summary.txt in the session folder.", 10f);
+                return;
+            }
+            ShowToast(wasSuite ? "Test stopped early; what was recorded is saved." + (Play != null ? " The full play recording carries on." : "") : "Recording stopped and saved.");
         }
 
         internal void SetPanel(bool open)
@@ -693,15 +746,18 @@ namespace ValPerfMonitor
                 Logger.LogInfo($"Capture {c.Number} (A/B turn) saved: {Path.Combine(c.Folder, "report.html")}");
                 return;
             }
-            string rel = Path.Combine(SessionName, Path.GetFileName(c.Folder)).Replace('\\', '/');
-            string runsCsv = Path.Combine(RootFolder, "runs.csv");
-            RunStamp.UpgradeHeader(runsCsv, Report.RunCsvHeader);
-            bool newFile = _runLines.Count == 0 && !File.Exists(runsCsv);
-            Writer.Append(runsCsv, (newFile ? Report.RunCsvHeader : "") + Report.RunCsvLine(c, SessionName, Registry, Context, rel));
-            string runJson = Report.RunJson(c, SessionName, Registry, Context, rel);
-            _runLines.Add(runJson);
-            Writer.Append(Path.Combine(RootFolder, "runs.jsonl"), runJson + "\n");
-            Writer.Write(Path.Combine(RootFolder, "compare.html"), Report.CompareHtml(_runLines));
+            if (!c.PlayBlock) // a play recording's blocks go to its own summary instead (dozens of them would bury compare.html)
+            {
+                string rel = Path.Combine(SessionName, Path.GetFileName(c.Folder)).Replace('\\', '/');
+                string runsCsv = Path.Combine(RootFolder, "runs.csv");
+                RunStamp.UpgradeHeader(runsCsv, Report.RunCsvHeader);
+                bool newFile = _runLines.Count == 0 && !File.Exists(runsCsv);
+                Writer.Append(runsCsv, (newFile ? Report.RunCsvHeader : "") + Report.RunCsvLine(c, SessionName, Registry, Context, rel));
+                string runJson = Report.RunJson(c, SessionName, Registry, Context, rel);
+                _runLines.Add(runJson);
+                Writer.Append(Path.Combine(RootFolder, "runs.jsonl"), runJson + "\n");
+                Writer.Write(Path.Combine(RootFolder, "compare.html"), Report.CompareHtml(_runLines));
+            }
 
             var s = Report.Summarize(c.Stats);
             var top = c.Mode == CaptureMode.Baseline ? null : c.OwnerRows().FirstOrDefault(r => !r.Mod.IsGame);
@@ -725,6 +781,7 @@ namespace ValPerfMonitor
             if (log.errors > 0)
                 Logger.LogInfo($"  Errors in the log during this capture: {log.errors} ({log.perMin:0.0} per minute), most from {log.top}. Details: perf/log_errors or {Path.Combine(SessionFolder, "log_errors.csv")}");
             WriteLogErrors();
+            if (c.PlayBlock) { WriteSlowObjects(); Play?.BlockFinished(c, this); }
             long logLines = (LogWatch.Instance?.Lines ?? 0) - c.LogLinesAtStart;
             double minutesC = Math.Max(1.0 / 60, (DateTime.Now - c.Started).TotalMinutes);
             if (LogWatch.Timed && logLines > 0)
@@ -947,6 +1004,7 @@ namespace ValPerfMonitor
             string file = Path.Combine(SessionFolder, "memory_census_" + DateTime.Now.ToString("HH-mm-ss", Csv.Inv) + ".txt");
             mc.File = file;
             Writer.Write(file, mc.Text());
+            if (Play != null && Play.OwnsCensus) { Play.OwnsCensus = false; Play.CensusFinished(mc); }
             Logger.LogInfo("Memory census finished:");
             foreach (var line in mc.Plain()) Logger.LogInfo("  " + line);
             if (mc.Errors > 0) Logger.LogInfo($"  {mc.Errors} objects could not be read (skipped).");
@@ -1016,7 +1074,7 @@ namespace ValPerfMonitor
         /// Nothing is recording. The probes stay attached (taking them off and on again costs seconds of hooking each
         /// way) but stop doing any work, and so does the network counting.
         /// </summary>
-        private void GoIdle()
+        internal void GoIdle()
         {
             Current = null;
             Probe.Recording = false;
@@ -1056,6 +1114,7 @@ namespace ValPerfMonitor
             if (Writer == null)
                 return;
             try { FinishCapture(); } catch (Exception e) { Logger.LogError(e); }
+            try { StopPlay("game closed"); } catch (Exception e) { Logger.LogError(e); }
             try { Link?.EndVisit(this, "game closed"); } catch (Exception e) { Logger.LogError(e); }
             try { WriteLogErrors(); } catch (Exception e) { Logger.LogError(e); }
             Writer.Dispose();

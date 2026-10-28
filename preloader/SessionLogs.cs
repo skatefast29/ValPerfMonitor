@@ -70,6 +70,7 @@ namespace ValPerfMonitor.Preloader
                         File.Copy(source.FullName, saved);
                         log.LogInfo($"Past session logs: saved the previous session's log as session_logs\\{Path.GetFileName(saved)}.");
                     }
+                    CopyToSessionFolder(root, source, suffix, log);
                 }
 
                 if (crash != null)
@@ -95,6 +96,33 @@ namespace ValPerfMonitor.Preloader
             {
                 log.Dispose();
             }
+        }
+
+        /// <summary>
+        /// Also a copy in that session's own data folder (named by the monitor in last-session-folder.txt), so one folder
+        /// holds the session's CSVs and its log. Only a folder under BepInEx\ValPerfMonitor that exists; the copy in
+        /// session_logs stays (the F11 panel and perf/ commands read those, and they are cleaned up after N days).
+        /// </summary>
+        private static void CopyToSessionFolder(string root, FileInfo source, string suffix, ManualLogSource log)
+        {
+            string pointer = Path.Combine(root, "last-session-folder.txt");
+            if (!File.Exists(pointer)) return;
+            try
+            {
+                string target = File.ReadAllText(pointer).Trim();
+                string full = Path.GetFullPath(target);
+                if (full.StartsWith(Path.GetFullPath(root), StringComparison.OrdinalIgnoreCase) && Directory.Exists(full))
+                {
+                    string copy = Path.Combine(full, "LogOutput" + suffix + ".log");
+                    if (!File.Exists(copy))
+                    {
+                        File.Copy(source.FullName, copy);
+                        log.LogInfo($"Past session logs: also saved it in that session's folder, {Path.GetFileName(full)}.");
+                    }
+                }
+            }
+            catch (Exception e) { log.LogWarning($"Past session logs: could not copy the log into its session folder - {e.Message}"); }
+            finally { try { File.Delete(pointer); } catch { } }
         }
 
         private sealed class Crash

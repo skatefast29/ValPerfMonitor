@@ -47,6 +47,7 @@ namespace ValPerfMonitor
                 secondsCounted = c == null ? 0 : Math.Round(c.MeasuredSeconds, 1),
                 suite = p.Suite == null ? "" : $"step {p.Suite.Step + 1}/{p.Suite.Steps.Count}",
                 abTest = p.Ab == null ? "" : p.Ab.Status,
+                playRecording = p.Play == null ? "" : p.Play.Status(p),
                 warmingUp = p.WarmingUp,
                 worldReady = p.WorldReady,
                 results = p.Results.Count,
@@ -62,6 +63,26 @@ namespace ValPerfMonitor
             // For this suite only: the owner's own "Run label" and "Seconds per mode" settings stay as they are.
             p.StartTimed(fullSuite: true, CaptureMode.Timing, string.IsNullOrWhiteSpace(label) ? null : label, seconds >= 15 ? seconds : 0);
             return new { success = p.Suite != null, label = p.Suite?.Label ?? "", secondsPerMode = p.Suite?.Seconds ?? 0f };
+        }
+
+        [BridgeTool("perf/start_play", "Start a full play recording: Timing, Allocations and Trace take turns in blocks while playing, with a memory census now and then and one combined summary (play_summary.txt). Block lengths come from the config section '8 - Full play recording'. Runs until perf/stop; perf/play_summary reads it")]
+        private static object StartPlayTool()
+        {
+            var p = P;
+            if (p == null) return new { success = false, error = "monitor not started" };
+            Busy(p, refuse: false);
+            p.StartPlay();
+            return new { success = true, cycle = p.Play.Describe(), summary = System.IO.Path.Combine(p.SessionFolder, "play_summary.txt"), note = "blocks start once in a world" };
+        }
+
+        [BridgeTool("perf/play_summary", "The full play recording's combined summary so far (also in play_summary.txt): FPS by place, heaviest mods, garbage, slow frames and their causes, memory, server connection, log errors")]
+        private static object PlaySummaryTool()
+        {
+            var p = P;
+            if (p == null) return new { success = false, error = "monitor not started" };
+            if (p.Play == null) return new { success = false, error = "no full play recording is running (perf/start_play)" };
+            Busy(p, refuse: false);
+            return new { success = true, status = p.Play.Status(p), blocks = p.Play.Blocks, lines = p.Play.Summary(p) };
         }
 
         [BridgeTool("perf/split_startup", "On the next launch, split these mods' startup into their own methods (comma-separated names or GUIDs) and/or the N slowest mods of this launch; empty and 0 = off. Results in perf/load_times after restart")]

@@ -18,7 +18,7 @@ namespace ValPerfMonitor
         private enum SortBy { Avg, Peak, Calls, Capture }
         private enum Filter { Mods, Game, All }
         private enum Tab { Run, Live, Results, LoadMemory }
-        private enum RunKind { Suite, Single, Continuous, Objects, Memory }
+        private enum RunKind { Suite, Single, Continuous, Play, Objects, Memory }
 
         private static readonly Dictionary<CaptureMode, string> ModeHelp = new Dictionary<CaptureMode, string>
         {
@@ -134,11 +134,12 @@ namespace ValPerfMonitor
             if (mc != null)
                 return $"<color=#ffcc55>● Memory census</color>   {mc.Status}";
             if (p.Current == null)
-                return "<color=#aaaaaa>■ Idle</color> – not recording. Start a test in the Run tab.";
+                return p.Play != null ? $"<color=#ffcc55>● {p.Play.Status(p)}</color>" : "<color=#aaaaaa>■ Idle</color> – not recording. Start a test in the Run tab.";
             string state = p.Instrumenter.Pending > 0 ? $"<color=#ffcc55>● Hooking {p.Instrumenter.Pending} methods…</color>"
                 : p.WarmingUp ? $"<color=#ffcc55>● Warming up {p.WarmupLeft:0}s</color> (not counted yet)"
                 : "<color=#ff5555>● Recording</color>";
             string what = p.Suite != null ? p.Suite.Status(p) : ObjectCosts.Running != null ? ObjectCosts.Running.Status : p.Ab != null ? $"{p.Ab.Status} · {p.Current.MeasuredSeconds:0}/{p.Ab.Seconds:0}s"
+                        : p.Play != null && p.Current.PlayBlock ? p.Play.Status(p)
                         : $"{p.Current.Mode}, continuous · {p.Current.MeasuredSeconds:0}s counted";
             return $"{state}   {what}";
         }
@@ -249,7 +250,9 @@ namespace ValPerfMonitor
             GUILayout.Label(_status, _label);
             GUILayout.FlexibleSpace();
             bool testRunning = _plugin.Suite != null || _plugin.Ab != null || ObjectCosts.Running != null || MemoryCensus.Running != null;
-            if ((Cap != null || MemoryCensus.Running != null) && GUILayout.Button(testRunning ? "■ Stop test" : "■ Stop & save", GUILayout.Width(120)))
+            bool playOnly = !testRunning || (_plugin.Play != null && _plugin.Play.OwnsCensus);
+            if ((Cap != null || MemoryCensus.Running != null || _plugin.Play != null) &&
+                GUILayout.Button(_plugin.Play != null && playOnly ? "■ Stop play recording" : testRunning ? "■ Stop test" : "■ Stop & save", GUILayout.Width(_plugin.Play != null && playOnly ? 170 : 120)))
                 _plugin.StopTest();
             GUILayout.EndHorizontal();
             if (Time.realtimeSinceStartup < _plugin.ToastUntil && _plugin.Toast.Length > 0)
@@ -294,6 +297,7 @@ namespace ValPerfMonitor
                 $"{p.CfgSuiteSeconds.Value:0} s each. About {Math.Ceiling(suiteSteps * (p.CfgSuiteSeconds.Value + p.CfgWarmup.Value + 10) / 60):0} min. Stays in one spot for comparable numbers.");
             KindCard(RunKind.Single, "Single test", $"One mode for {p.CfgBenchmarkSeconds.Value:0} s, then stops and saves.");
             KindCard(RunKind.Continuous, "Continuous recording", "One mode until you press Stop. Good for recording a whole play session (logs every 10 s).");
+            KindCard(RunKind.Play, "Full play recording  (heavier)", "Records everything while you play, until you press Stop: Timing, Allocations and Trace take turns in blocks, a memory census now and then, ping and network the whole time, one combined summary. More stutter and lower FPS.");
             KindCard(RunKind.Objects, "Most expensive objects", "Times each object's per-frame code (creatures, fires, smelters, mod objects) for 20 s and ranks objects and prefabs. Results in the log and object_costs.csv.");
             KindCard(RunKind.Memory, "Memory census", "Counts which mods, game systems and Harmony patches keep the most objects in memory, times a full garbage collection, and shows what grew since the last census. Results in the log and a memory_census file.");
 
@@ -308,6 +312,27 @@ namespace ValPerfMonitor
                     if (oc.Error != null) p.ShowToast("Object costs: " + oc.Error);
                     p.SetPanel(false);
                 }
+                return;
+            }
+
+            if (_kind == RunKind.Play)
+            {
+                GUILayout.Space(8);
+                GUILayout.Label($"Just play; nothing to press. Blocks: Timing {p.CfgPlayTiming.Value:0.#} min, Allocations {p.CfgPlayAlloc.Value:0.#} min, Trace {p.CfgPlayTrace.Value:0.#} min" +
+                                (p.CfgPlayCensus.Value > 0 ? $", memory census every {p.CfgPlayCensus.Value:0} min" : "") +
+                                " (change them in the config, section \"8 - Full play recording\"). It pauses while you are out of a world and carries on after. " +
+                                "The summary, play_summary.txt in the session folder, is updated after every block.", _wrap);
+                GUILayout.BeginHorizontal();
+                p.CfgPlayOnLaunch.Value = GUILayout.Toggle(p.CfgPlayOnLaunch.Value, " start it by itself every time the game starts", GUILayout.Width(440));
+                GUILayout.EndHorizontal();
+                GUILayout.Space(6);
+                GUI.enabled = p.Play == null;
+                if (GUILayout.Button(p.Play != null ? "Full play recording is running" : "▶  Start full play recording" + (Cap != null ? "   (ends the current recording)" : ""), _big, GUILayout.Height(38)))
+                {
+                    p.StartPlay();
+                    p.SetPanel(false);
+                }
+                GUI.enabled = true;
                 return;
             }
 

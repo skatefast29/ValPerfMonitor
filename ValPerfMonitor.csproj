@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net472</TargetFramework>
@@ -6,7 +6,7 @@
     <AssemblyName>ValPerfMonitor</AssemblyName>
     <RootNamespace>ValPerfMonitor</RootNamespace>
     <Nullable>disable</Nullable>
-    <Version>1.5.1</Version>
+    <Version>1.6.0</Version>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <DebugType>none</DebugType>
@@ -24,6 +24,7 @@
   <ItemGroup>
     <Reference Include="0Harmony" HintPath="$(BepInExCore)\0Harmony.dll" Private="false" />
     <Reference Include="BepInEx" HintPath="$(BepInExCore)\BepInEx.dll" Private="false" />
+    <Reference Include="Mono.Cecil" HintPath="$(BepInExCore)\Mono.Cecil.dll" Private="false" />
     <Reference Include="assembly_valheim" HintPath="$(ManagedDir)\assembly_valheim.dll" Private="false" />
     <Reference Include="assembly_utils" HintPath="$(ManagedDir)\assembly_utils.dll" Private="false" />
     <Reference Include="com.rlabrecque.steamworks.net" HintPath="$(ManagedDir)\com.rlabrecque.steamworks.net.dll" Private="false" />
@@ -41,7 +42,11 @@
     <Compile Remove="preloader\**" />
     <None Remove="preloader\**" />
   </ItemGroup>
-  <Target Name="BuildPreloader" BeforeTargets="Build">
+  <!-- The plugin carries the patcher, so a server without it gets it installed (PreloaderInstall). Built before compiling. -->
+  <ItemGroup>
+    <EmbeddedResource Include="preloader\bin\$(Configuration)\net472\ValPerfMonitor.Preloader.dll" LogicalName="ValPerfMonitor.Preloader.dll" />
+  </ItemGroup>
+  <Target Name="BuildPreloader" BeforeTargets="BeforeBuild">
     <MSBuild Projects="preloader\ValPerfMonitor.Preloader.csproj" Targets="Restore" Properties="Configuration=$(Configuration);GaleProfile=$(GaleProfile);RestorePass=1" />
     <MSBuild Projects="preloader\ValPerfMonitor.Preloader.csproj" Targets="Build" Properties="Configuration=$(Configuration);GaleProfile=$(GaleProfile)" />
   </Target>

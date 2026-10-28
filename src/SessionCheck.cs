@@ -41,6 +41,20 @@ namespace ValPerfMonitor
             catch { }
         }
 
+        /// <summary>
+        /// This session's data folder, so the preloader can put a copy of this session's log in it at the next launch
+        /// (one folder per session with everything in it). Same file name as in the preloader's SessionLogs.
+        /// </summary>
+        public static void RememberFolder(string folder)
+        {
+            try
+            {
+                Directory.CreateDirectory(Root);
+                File.WriteAllText(Path.Combine(Root, "last-session-folder.txt"), folder);
+            }
+            catch { }
+        }
+
         /// <summary>The game is quitting normally.</summary>
         public static void Closed()
         {

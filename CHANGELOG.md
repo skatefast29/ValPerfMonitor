@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.6.0
+
+- Full play recording (F11 -> Run, off by default): Timing, Allocations and Trace take turns while you play, with memory censuses and one combined summary (play_summary.txt).
+- Server: startup freezes no longer blamed on garbage collection.
+- Server: the hourly asset clean-up counts as the cause when its freeze lands on the frame that asked for it.
+- Server: worst ping leaves out players still joining (in server.csv too); server_players.csv marks them.
+- Server: always-empty Steam columns removed from server_players.csv.
+- Network messages that only had a number get their name from the mods' code.
+- Server: installs or updates its patcher in BepInEx/patchers by itself (works from the next restart).
+- Each session's log is also saved in that session's own folder (server_<date> or the game's session folder), next to its CSVs.
+
 ## 1.5.1
 
 - Server: frame times come from the monitor's own clock. Unity's put the slow startup frames on the wrong row.

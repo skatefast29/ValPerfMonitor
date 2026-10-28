@@ -95,7 +95,95 @@ namespace ValPerfMonitor
                 }
                 catch { }
             }
-            return _hints.TryGetValue(hash, out var name) ? name : null;
+            if (_hints.TryGetValue(hash, out var name)) return name;
+            var found = _codeNames;
+            lock (found) return found.TryGetValue(hash, out name) ? name : null;
+        }
+
+        // Messages a server only passes on (routed RPCs between players, RPCs on world objects) arrive as hashes, and
+        // nothing on the server registers them by name. Their names are string constants in the mods' code: read once,
+        // on a background thread, for the hashes still unnamed. Each hash is looked for once: a name built while the game
+        // runs isn't in the code, and every scan reads all the DLLs (garbage the server has to collect), so another
+        // scan only starts for hashes not looked for yet, at most every 10 minutes.
+        private static readonly Dictionary<int, string> _codeNames = new Dictionary<int, string>();
+        private static readonly HashSet<int> _codeTried = new HashSet<int>();
+        private static volatile bool _codeScanRunning;
+        private static float _codeScanAt = -10000f;
+        private const float CodeScanGapSeconds = 600f;
+
+        /// <summary>Main thread, once a minute (server network rows): names unnamed messages from the last code scan, and starts one if needed.</summary>
+        public void NameFromCode(float now)
+        {
+            var unnamed = Entries.Where(e => e.Name.StartsWith("#")).ToList();
+            if (unnamed.Count == 0) return;
+            var wanted = new HashSet<int>();
+            lock (_codeNames)
+                foreach (var e in unnamed)
+                {
+                    if (_codeNames.TryGetValue(e.Hash, out var name)) e.Name = name;
+                    else if (!_codeTried.Contains(e.Hash)) wanted.Add(e.Hash);
+                }
+            if (wanted.Count == 0 || _codeScanRunning || now - _codeScanAt < CodeScanGapSeconds) return;
+            _codeScanAt = now;
+            _codeTried.UnionWith(wanted);
+            int looking = wanted.Count;
+            _codeScanRunning = true;
+            var files = CodeFiles();
+            var log = _log;
+            new Thread(() =>
+            {
+                try
+                {
+                    int named = ScanCode(files, wanted);
+                    log.LogDebug($"Network message names: {named} of {looking} unnamed messages found in the code of {files.Count} DLLs.");
+                }
+                catch (Exception e) { log.LogDebug($"Network message names: {e.Message}"); }
+                finally { _codeScanRunning = false; }
+            }) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "ValPerfMonitor names" }.Start();
+        }
+
+        /// <summary>The game's DLL and every loaded mod DLL in BepInEx\plugins (read on the main thread; the scan only reads files).</summary>
+        private static List<string> CodeFiles()
+        {
+            string plugins = System.IO.Path.GetFullPath(BepInEx.Paths.PluginPath);
+            var files = new List<string>();
+            foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                string path;
+                try { path = a.IsDynamic ? null : a.Location; } catch { path = null; }
+                if (string.IsNullOrEmpty(path)) continue;
+                if (a == typeof(ZNet).Assembly || path.StartsWith(plugins, StringComparison.OrdinalIgnoreCase)) files.Add(path);
+            }
+            return files.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        /// <summary>Every string constant (ldstr) in the files, hashed the game's way; keeps the ones that match a wanted hash.</summary>
+        private static int ScanCode(List<string> files, HashSet<int> wanted)
+        {
+            int named = 0;
+            foreach (var file in files)
+            {
+                if (wanted.Count == 0) break;
+                try
+                {
+                    using (var module = Mono.Cecil.ModuleDefinition.ReadModule(file, new Mono.Cecil.ReaderParameters { ReadSymbols = false }))
+                        foreach (var type in module.GetTypes())
+                            foreach (var method in type.Methods)
+                            {
+                                if (!method.HasBody) continue;
+                                foreach (var ins in method.Body.Instructions)
+                                {
+                                    if (ins.OpCode.Code != Mono.Cecil.Cil.Code.Ldstr || !(ins.Operand is string s) || s.Length == 0 || s.Length > 100) continue;
+                                    int hash = s.GetStableHashCode();
+                                    if (!wanted.Remove(hash)) continue;
+                                    lock (_codeNames) _codeNames[hash] = s;
+                                    named++;
+                                }
+                            }
+                }
+                catch { } // a DLL that can't be read: its messages keep their numbers
+            }
+            return named;
         }
 
         // ---- Hooks ------------------------------------------------------------------------------

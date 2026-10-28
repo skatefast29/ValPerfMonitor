@@ -38,6 +38,8 @@ namespace ValPerfMonitor
         public bool Finished;
         /// <summary>One turn of an A/B test: saved in its folder, but not added to the run history.</summary>
         public bool AbTurn;
+        /// <summary>One block of a full play recording: saved in its folder and in play_summary.txt, not in the run history.</summary>
+        public bool PlayBlock;
         // How often each log message had been seen when the capture started (LogWatch), to count only this capture's.
         public Dictionary<string, int> LogBefore;
 
