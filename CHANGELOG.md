@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.1
+
+- Server: the log says how the network message name lookup went (and why, when it fails).
+- Server: messages the server only sends get the mod they belong to.
+- Server: server_network_summary.csv is rewritten every minute.
+- Server: slow frames when a player joins or leaves are marked (server_hitches.csv and the summaries).
+- Server: the last summary before a shutdown gives seconds instead of "0 min".
+- Full play recording: no longer stuck on "waiting for the world" when started in the first seconds in a world.
+- Full play recording: shorter blocks by default (Timing 5 min, Allocations 2, Trace 2), so each activity gets all three.
+
 ## 1.6.0
 
 - Full play recording (F11 -> Run, off by default): Timing, Allocations and Trace take turns while you play, with memory censuses and one combined summary (play_summary.txt).

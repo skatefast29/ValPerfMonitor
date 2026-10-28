@@ -18,7 +18,7 @@ namespace ValPerfMonitor
     {
         public const string Guid = "valheimmods.ValPerfMonitor";
         public const string Name = "ValPerfMonitor";
-        public const string Version = "1.6.0";
+        public const string Version = "1.6.1";
 
         internal static Plugin Instance;
         internal ModRegistry Registry;
@@ -160,8 +160,8 @@ namespace ValPerfMonitor
             CfgBenchmarkSeconds = Config.Bind("4 - Suite", "Single test seconds", 60f, "Length of a single-mode timed test.");
 
             CfgPlayOnLaunch = Config.Bind("8 - Full play recording", "Full play recording on launch", false, "Instead of the usual one-mode recording, record everything while you play: Timing, Allocations and Trace take turns in blocks, with a memory census now and then, and one combined summary (play_summary.txt in the session folder). Heavier: more stutters and lower FPS. Also started from F11 -> Run a test.");
-            CfgPlayTiming = Config.Bind("8 - Full play recording", "Timing minutes", 10f, "Length of each Timing block (CPU time per mod and game system). 0 = left out.");
-            CfgPlayAlloc = Config.Bind("8 - Full play recording", "Allocations minutes", 3f, "Length of each Allocations block (garbage per mod). 0 = left out.");
+            CfgPlayTiming = Config.Bind("8 - Full play recording", "Timing minutes", 5f, "Length of each Timing block (CPU time per mod and game system). 0 = left out.");
+            CfgPlayAlloc = Config.Bind("8 - Full play recording", "Allocations minutes", 2f, "Length of each Allocations block (garbage per mod). 0 = left out.");
             CfgPlayTrace = Config.Bind("8 - Full play recording", "Trace minutes", 2f, "Length of each Trace block (flame graphs of slow frames). 0 = left out.");
             CfgPlayCensus = Config.Bind("8 - Full play recording", "Memory census every (minutes)", 30f, "Between blocks, count what keeps memory (a stutter of a few seconds). 0 = off.");
 
@@ -588,6 +588,7 @@ namespace ValPerfMonitor
             StopPlay("restarted");
             FinishCapture();
             GoIdle();
+            _autoStartPending = false; // started before the world settled: the usual recording on launch must not take its place
             Play = new PlayRecording(this);
             Logger.LogInfo($"Full play recording started: {Play.Describe()}. Summary: {Path.Combine(SessionFolder, "play_summary.txt")}");
             ShowToast("Full play recording: Timing, Allocations and Trace take turns while you play. Expect some stutter. F11 -> Stop ends it.", 10f);

@@ -97,30 +97,36 @@ namespace ValPerfMonitor
             }
             if (_hints.TryGetValue(hash, out var name)) return name;
             var found = _codeNames;
-            lock (found) return found.TryGetValue(hash, out name) ? name : null;
+            lock (found) return found.TryGetValue(hash, out var code) ? code.name : null;
         }
 
         // Messages a server only passes on (routed RPCs between players, RPCs on world objects) arrive as hashes, and
         // nothing on the server registers them by name. Their names are string constants in the mods' code: read once,
-        // on a background thread, for the hashes still unnamed. Each hash is looked for once: a name built while the game
-        // runs isn't in the code, and every scan reads all the DLLs (garbage the server has to collect), so another
-        // scan only starts for hashes not looked for yet, at most every 10 minutes.
-        private static readonly Dictionary<int, string> _codeNames = new Dictionary<int, string>();
+        // on a background thread, for the hashes still unnamed. The DLL a name is found in also gives the mod, for
+        // messages the server only sends (nothing on it handles them, so they had no owner). Each hash is looked for once:
+        // a name built while the game runs isn't in the code, and every scan reads all the DLLs (garbage the server has
+        // to collect), so another scan only starts for hashes not looked for yet, at most every 10 minutes.
+        private static readonly Dictionary<int, (string name, string owner)> _codeNames = new Dictionary<int, (string, string)>();
         private static readonly HashSet<int> _codeTried = new HashSet<int>();
         private static volatile bool _codeScanRunning;
         private static float _codeScanAt = -10000f;
         private const float CodeScanGapSeconds = 600f;
 
-        /// <summary>Main thread, once a minute (server network rows): names unnamed messages from the last code scan, and starts one if needed.</summary>
+        /// <summary>Main thread, once a minute (server network rows): names unnamed messages and fills in missing owners
+        /// from the last code scan, and starts one if needed.</summary>
         public void NameFromCode(float now)
         {
-            var unnamed = Entries.Where(e => e.Name.StartsWith("#")).ToList();
-            if (unnamed.Count == 0) return;
+            var missing = Entries.Where(e => e.Hash != 0 && (e.Name.StartsWith("#") || string.IsNullOrEmpty(e.Owner))).ToList();
+            if (missing.Count == 0) return;
             var wanted = new HashSet<int>();
             lock (_codeNames)
-                foreach (var e in unnamed)
+                foreach (var e in missing)
                 {
-                    if (_codeNames.TryGetValue(e.Hash, out var name)) e.Name = name;
+                    if (_codeNames.TryGetValue(e.Hash, out var code))
+                    {
+                        if (e.Name.StartsWith("#")) e.Name = code.name;
+                        if (string.IsNullOrEmpty(e.Owner)) e.Owner = code.owner;
+                    }
                     else if (!_codeTried.Contains(e.Hash)) wanted.Add(e.Hash);
                 }
             if (wanted.Count == 0 || _codeScanRunning || now - _codeScanAt < CodeScanGapSeconds) return;
@@ -134,34 +140,47 @@ namespace ValPerfMonitor
             {
                 try
                 {
-                    int named = ScanCode(files, wanted);
-                    log.LogDebug($"Network message names: {named} of {looking} unnamed messages found in the code of {files.Count} DLLs.");
+                    var (named, unread, firstError) = ScanCode(files, wanted);
+                    log.LogInfo($"Network message names: {named} of {looking} unnamed or ownerless messages found in the code of {files.Count} DLLs" +
+                                (unread > 0 ? $"; {unread} DLLs could not be read ({firstError})." : "."));
                 }
-                catch (Exception e) { log.LogDebug($"Network message names: {e.Message}"); }
+                catch (Exception e) { log.LogWarning($"Network message names: the code scan failed ({e.GetType().Name}: {e.Message}); messages keep their numbers."); }
                 finally { _codeScanRunning = false; }
             }) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "ValPerfMonitor names" }.Start();
         }
 
-        /// <summary>The game's DLL and every loaded mod DLL in BepInEx\plugins (read on the main thread; the scan only reads files).</summary>
-        private static List<string> CodeFiles()
+        /// <summary>The game's DLL (first, so the game wins a name a mod also uses) and every loaded mod DLL in
+        /// BepInEx\plugins, with the mod each belongs to (read on the main thread; the scan only reads files).</summary>
+        private List<(string path, string owner)> CodeFiles()
         {
             string plugins = System.IO.Path.GetFullPath(BepInEx.Paths.PluginPath);
-            var files = new List<string>();
-            foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+            var files = new List<(string path, string owner)>();
+            var game = typeof(ZNet).Assembly;
+            foreach (var a in new[] { game }.Concat(AppDomain.CurrentDomain.GetAssemblies().Where(x => x != game)))
             {
-                string path;
-                try { path = a.IsDynamic ? null : a.Location; } catch { path = null; }
-                if (string.IsNullOrEmpty(path)) continue;
-                if (a == typeof(ZNet).Assembly || path.StartsWith(plugins, StringComparison.OrdinalIgnoreCase)) files.Add(path);
+                try
+                {
+                    string path = a.IsDynamic ? null : a.Location;
+                    if (string.IsNullOrEmpty(path) || files.Any(f => string.Equals(f.path, path, StringComparison.OrdinalIgnoreCase))) continue;
+                    if (a == game) files.Add((path, "Valheim"));
+                    else if (System.IO.Path.GetFullPath(path).StartsWith(plugins, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string owner = a.GetName().Name;
+                        try { if (_registry != null) owner = _registry.Resolve(a, null).Name; } catch { }
+                        files.Add((path, owner));
+                    }
+                }
+                catch { } // an assembly with no readable location: left out
             }
-            return files.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            return files;
         }
 
         /// <summary>Every string constant (ldstr) in the files, hashed the game's way; keeps the ones that match a wanted hash.</summary>
-        private static int ScanCode(List<string> files, HashSet<int> wanted)
+        private static (int named, int unread, string firstError) ScanCode(List<(string path, string owner)> files, HashSet<int> wanted)
         {
-            int named = 0;
-            foreach (var file in files)
+            int named = 0, unread = 0;
+            string firstError = "";
+            foreach (var (file, owner) in files)
             {
                 if (wanted.Count == 0) break;
                 try
@@ -176,14 +195,17 @@ namespace ValPerfMonitor
                                     if (ins.OpCode.Code != Mono.Cecil.Cil.Code.Ldstr || !(ins.Operand is string s) || s.Length == 0 || s.Length > 100) continue;
                                     int hash = s.GetStableHashCode();
                                     if (!wanted.Remove(hash)) continue;
-                                    lock (_codeNames) _codeNames[hash] = s;
+                                    lock (_codeNames) _codeNames[hash] = (s, owner);
                                     named++;
                                 }
                             }
                 }
-                catch { } // a DLL that can't be read: its messages keep their numbers
+                catch (Exception e) // a DLL that can't be read: its messages keep their numbers
+                {
+                    if (unread++ == 0) firstError = $"{System.IO.Path.GetFileName(file)}: {e.GetType().Name}: {e.Message}";
+                }
             }
-            return named;
+            return (named, unread, firstError);
         }
 
         // ---- Hooks ------------------------------------------------------------------------------

@@ -33,7 +33,7 @@ namespace ValPerfMonitor
         public const string RowHeader = "time,uptime_s,players,fps,frame_ms_avg,worst_frame_ms,slow_frames,world_objects,objects_sent_s,objects_received_s," +
                                         "upload_kb_s,download_kb_s,worst_ping_ms,worst_ping_player,worst_backlog_kb,gc,heap_mb,saving\n";
         public const string PlayerHeader = "time,player,game_ping_ms,joining,to_player_kb_s,from_player_kb_s,backlog_kb,seconds_since_answer,pos_x,pos_z\n";
-        public const string HitchHeader = "time,uptime_s,frame_ms,players,world_save,world_objects,garbage_collection,asset_cleanup\n";
+        public const string HitchHeader = "time,uptime_s,frame_ms,players,world_save,world_objects,garbage_collection,asset_cleanup,player_joined_left\n";
 
         /// <summary>No graphics device, or started with -batchmode: the dedicated server.</summary>
         public static bool Detect()
@@ -199,7 +199,14 @@ namespace ValPerfMonitor
         private int _gcAt, _gcFrame;
 
         // Since the last log summary.
-        private int _sFrames, _sSlow, _sHitches, _sSaves, _sSeconds, _sHitchSave, _sHitchGc, _sHitchCleanup;
+        private int _sFrames, _sSlow, _sHitches, _sSaves, _sSeconds, _sHitchSave, _sHitchGc, _sHitchCleanup, _sHitchJoin;
+
+        // Players joining and leaving: the server does a burst of work then (sending a joining player the world around
+        // them, handing a leaving player's objects to others), so a slow frame within a few seconds of it is labelled.
+        private const float JoinLeaveSeconds = 3f;
+        private int _peerCount = -1, _playerCount = -1;
+        private float _joinLeaveAt = -100;
+        private string _joinLeave = "";
         private float _sFrameSum, _sWorst, _sWorstPing;
         private double _sPlayers;
         private string _sWorstPingPlayer = "";
@@ -336,6 +343,15 @@ namespace ValPerfMonitor
                 _log.LogInfo($"World save: the server stood still for {_saveFreezeMs:0} ms, then wrote the file in the background for {now - _saveStartedAt:0.0} s.");
             _saving = saving;
 
+            // A connection opening or closing (peers), or a player's character arriving or going (players).
+            int peerCount = znet != null ? znet.GetPeers().Count : 0, playerCount = znet != null ? znet.GetNrOfPlayers() : 0;
+            if (_peerCount >= 0 && (peerCount != _peerCount || playerCount != _playerCount))
+            {
+                _joinLeaveAt = now;
+                _joinLeave = peerCount > _peerCount || playerCount > _playerCount ? "joined" : "left";
+            }
+            _peerCount = peerCount; _playerCount = playerCount;
+
             bool first = !_seenFrame;
             _seenFrame = true;
             if (ms >= _hitchMs.Value && !first && !own)
@@ -343,13 +359,15 @@ namespace ValPerfMonitor
                 _slow++; _sHitches++;
                 bool save = saving || now - _saveStartedAt < 2f;
                 string cleanup = frameFrom > 0 ? AssetCleanup.Label(frameFrom, tick) : AssetCleanup.Label(frame);
+                string joinLeave = now - _joinLeaveAt <= JoinLeaveSeconds ? _joinLeave : "";
                 if (save) _sHitchSave++;
                 if (gcFrame) _sHitchGc++;
                 if (cleanup.Length > 0) _sHitchCleanup++; // "asked" too: the clean-up's freeze can land on the frame that asked for it
-                int players = znet != null ? znet.GetNrOfPlayers() : 0;
+                if (joinLeave.Length > 0) _sHitchJoin++;
+                int players = playerCount;
                 int objects = ZDOMan.instance != null ? ZDOMan.instance.NrOfObjects() : -1;
                 _writer.Append(Path.Combine(_folder, "server_hitches.csv"), (_hitchHeader ? "" : HitchHeader) +
-                    $"{DateTime.Now.ToString("HH:mm:ss", Csv.Inv)},{Csv.F(now - _started, "0.0")},{Csv.F(ms, "0")},{players},{(save ? "yes" : "")},{objects},{(gcFrame ? "yes" : "")},{cleanup}\n");
+                    $"{DateTime.Now.ToString("HH:mm:ss", Csv.Inv)},{Csv.F(now - _started, "0.0")},{Csv.F(ms, "0")},{players},{(save ? "yes" : "")},{objects},{(gcFrame ? "yes" : "")},{cleanup},{joinLeave}\n");
                 _hitchHeader = true;
                 if (ms >= 1000f && _inStartup)
                     _log.LogInfo($"Server froze for {ms / 1000f:0.0} s while starting up (split into its loading steps once startup is done).");
@@ -359,6 +377,7 @@ namespace ValPerfMonitor
                     if (save) why.Add("world save");
                     if (cleanup.Length > 0) why.Add("the game's asset clean-up");
                     if (gcFrame) why.Add("a garbage collection ran in it");
+                    if (joinLeave.Length > 0) why.Add("a player " + joinLeave);
                     _log.LogInfo($"Server froze for {ms / 1000f:0.0} s{(why.Count > 0 ? " (" + string.Join(", ", why.ToArray()) + ")" : "")} with {players} players on.");
                 }
                 if (_inStartup)
@@ -375,7 +394,7 @@ namespace ValPerfMonitor
             if (now - _secondStart >= 1f) Second(znet, now);
             if (now >= _nextPlayers) { _nextPlayers = now + 5f; Players(znet); }
             if (now >= _nextFlush) Flush(now);
-            if (_net != null && now >= _nextNetwork) Network(now, summary: false);
+            if (_net != null && now >= _nextNetwork) Network(now);
             if (now >= _nextSummary) Summary(now);
         }
 
@@ -560,7 +579,7 @@ namespace ValPerfMonitor
 
         private bool _networkHeader;
 
-        private void Network(float now, bool summary)
+        private void Network(float now)
         {
             _nextNetwork = now + 60f;
             _net.NameFromCode(now); // names found by the last scan go into this minute's rows; starts the scan the first minute one is unnamed
@@ -571,17 +590,19 @@ namespace ValPerfMonitor
                 _writer.Append(Path.Combine(_folder, "server_network.csv"), (_networkHeader ? "" : NetworkStats.IntervalHeader.Replace("session_s", "uptime_s")) + rows);
                 _networkHeader = true;
             }
-            if (summary) _writer.Write(Path.Combine(_folder, "server_network_summary.csv"), _net.SummaryCsv(now - _started));
+            // Every minute, like the rows: a copy downloaded mid-run is at most a minute old.
+            _writer.Write(Path.Combine(_folder, "server_network_summary.csv"), _net.SummaryCsv(now - _started));
         }
 
         private void Summary(float now)
         {
             _nextSummary = now + SummarySeconds;
             if (_sSeconds == 0) return;
-            if (_net != null) Network(now, summary: true);
+            if (_net != null) Network(now);
             double minutes = _sSeconds / 60.0;
             double selfMs = _selfTicks * 1000.0 / Stopwatch.Frequency;
-            _log.LogInfo($"Server, last {minutes:0} min: {_sPlayers / _sSeconds:0.0} players, {(_sFrameSum > 0 ? 1000.0 * _sFrames / _sFrameSum : 0):0} FPS, " +
+            string span = _sSeconds < 60 ? $"{_sSeconds} s" : $"{minutes:0} min"; // the last stretch before a shutdown can be short
+            _log.LogInfo($"Server, last {span}: {_sPlayers / _sSeconds:0.0} players, {(_sFrameSum > 0 ? 1000.0 * _sFrames / _sFrameSum : 0):0} FPS, " +
                          $"worst frame {_sWorst:0} ms, {_sHitches} frames over {_hitchMs.Value:0} ms{HitchCauses()}, {_sSaves} world saves" +
                          (_sWorstPing > 0 ? $", worst ping {_sWorstPing:0} ms ({_sWorstPingPlayer})" : "") + ".");
             if (_net != null)
@@ -607,6 +628,7 @@ namespace ValPerfMonitor
             if (_sHitchSave > 0) c.Add($"{_sHitchSave} in world saves");
             if (_sHitchCleanup > 0) c.Add($"{_sHitchCleanup} in the game's asset clean-up");
             if (_sHitchGc > 0) c.Add($"{_sHitchGc} with a garbage collection");
+            if (_sHitchJoin > 0) c.Add($"{_sHitchJoin} as a player joined or left");
             return c.Count > 0 ? " (" + string.Join(", ", c.ToArray()) + ")" : "";
         }
 
@@ -617,7 +639,7 @@ namespace ValPerfMonitor
             if (_net != null)
                 foreach (var e in _net.Entries) _netAtSummary[e] = e.SentCalls + e.RecvCalls;
             _sFrames = _sSlow = _sHitches = _sSaves = _sSeconds = 0;
-            _sHitchSave = _sHitchGc = _sHitchCleanup = 0;
+            _sHitchSave = _sHitchGc = _sHitchCleanup = _sHitchJoin = 0;
             _sFrameSum = _sWorst = _sWorstPing = 0;
             _sPlayers = 0;
             _sWorstPingPlayer = "";

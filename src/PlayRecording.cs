@@ -79,6 +79,14 @@ namespace ValPerfMonitor
             if (OwnsCensus && MemoryCensus.Running == null) OwnsCensus = false;
             if (p.TestRunning != null) return; // a test (or this recording's census) runs; carry on after it
             var c = p.Current;
+            if (c != null && !c.PlayBlock)
+            {
+                // A plain recording that isn't a test (anything the owner starts by hand ends this recording first):
+                // left over from before, so it is saved and the blocks take over.
+                p.FinishCapture();
+                p.GoIdle();
+                c = null;
+            }
             if (c != null && c == _block)
             {
                 if (!inWorld || Time.realtimeSinceStartup - _blockStart >= _blockMinutes * 60)
